@@ -780,7 +780,7 @@ async def test_recovery_blocks_dependents_after_prerequisite_failure_and_records
     monkeypatch.setattr(app_module, "store", store)
     prerequisite = store.create_task("[research] Gather evidence", "Gather evidence")
     dependent = store.create_task("[coding] Prepare summary", "Use gathered evidence")
-    qa = store.create_task("[qa_security] Review results", "Review recovered results")
+    qa = store.create_task("[qa_security] Review specialist results", "Review recovered results")
     plan = [
         {
             "title": "Gather evidence",
