@@ -856,7 +856,8 @@ async def test_recovery_blocks_dependents_after_prerequisite_failure_and_records
     assert result["status"] == "partial"
     assert executed == [prerequisite["id"], qa["id"]]
     assert store.get_task(prerequisite["id"])["status"] == "failed"
-    assert store.get_task(dependent["id"])["status"] == "blocked"
+    # Blocking is a workflow-checkpoint outcome; the unclaimed durable task stays queued.
+    assert store.get_task(dependent["id"])["status"] == "queued"
     assert store.get_task(qa["id"])["status"] == "succeeded"
 
     saved = store.get_workflow(workflow["id"])
