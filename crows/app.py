@@ -1365,7 +1365,7 @@ def _rebuild_workflow_recovery_diagnostics(checkpoint: dict[str, Any]) -> dict[s
         if not isinstance(item, dict):
             continue
         status = item.get("status")
-        if status in {"failed", "unknown", "blocked"}:
+        if status in {"failed", "unknown", "blocked", "running"}:
             reason = item.get("error") or (
                 "Prerequisite task did not succeed." if status == "blocked"
                 else "Execution outcome is uncertain; inspect task and tool journals."
@@ -1379,7 +1379,7 @@ def _rebuild_workflow_recovery_diagnostics(checkpoint: dict[str, Any]) -> dict[s
                 "category": (
                     "timeout" if "timeout" in str(reason).lower()
                     else "dependency_blocked" if status == "blocked"
-                    else "outcome_unknown" if status == "unknown"
+                    else "outcome_unknown" if status in {"unknown", "running"}
                     else "task_failed"
                 ),
                 "reason": str(reason)[:500],
@@ -1802,6 +1802,11 @@ async def recover_agent_workflow(workflow_id: str):
             }
 
         _rebuild_workflow_recovery_diagnostics(checkpoint)
+        final_qa = checkpoint.get("qa_review")
+        qa_verdict = (
+            final_qa.get("verdict", "UNVERIFIED")
+            if isinstance(final_qa, dict) else "UNVERIFIED"
+        )
         all_ok = (
             all(item.get("status") == "succeeded" for item in outcomes)
             and isinstance(final_qa, dict)
