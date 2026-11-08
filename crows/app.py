@@ -1389,7 +1389,7 @@ def _rebuild_workflow_recovery_diagnostics(checkpoint: dict[str, Any]) -> dict[s
     if isinstance(final_qa, dict) and qa_status == "succeeded":
         final_qa.update(parse_qa_verdict(final_qa.get("result", "")))
     qa_verdict = final_qa.get("verdict", "UNVERIFIED") if isinstance(final_qa, dict) else "UNVERIFIED"
-    if isinstance(final_qa, dict) and qa_status and qa_status != "succeeded":
+    if isinstance(final_qa, dict) and qa_status in {"failed", "unknown", "running"}:
         failures.append({
             "task_id": final_qa.get("task_id"),
             "title": "QA/security review",
