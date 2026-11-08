@@ -769,3 +769,109 @@ async def test_recovery_cancellation_after_task_success_keeps_checkpoint_recover
     assert saved["status"] == "unknown"
     assert saved["results"]["tasks"][0]["status"] == "succeeded"
     assert store.get_task(task_id)["status"] == "succeeded"
+
+
+
+@pytest.mark.asyncio
+async def test_recovery_blocks_dependents_after_prerequisite_failure_and_records_diagnostics(
+    tmp_path, monkeypatch
+):
+    store = TaskStore(tmp_path / "dependency-blocking-recovery.sqlite3")
+    monkeypatch.setattr(app_module, "store", store)
+    prerequisite = store.create_task("[research] Gather evidence", "Gather evidence")
+    dependent = store.create_task("[coding] Prepare summary", "Use gathered evidence")
+    qa = store.create_task("[qa_security] Review results", "Review recovered results")
+    plan = [
+        {
+            "title": "Gather evidence",
+            "input": "Gather evidence",
+            "role": "research",
+            "depends_on": [],
+        },
+        {
+            "title": "Prepare summary",
+            "input": "Use gathered evidence",
+            "role": "coding",
+            "depends_on": [0],
+        },
+    ]
+    checkpoint = {
+        "tasks": [
+            {
+                "plan_index": 0,
+                "task_id": prerequisite["id"],
+                "title": "Gather evidence",
+                "role": "research",
+                "status": "queued",
+                "depends_on": [],
+            },
+            {
+                "plan_index": 1,
+                "task_id": dependent["id"],
+                "title": "Prepare summary",
+                "role": "coding",
+                "status": "queued",
+                "depends_on": [0],
+            },
+        ],
+        "qa_review": {"task_id": qa["id"], "status": "queued"},
+    }
+    workflow = store.create_workflow("Recover dependency chain", plan)
+    store.update_workflow(
+        workflow["id"], "unknown", results=checkpoint, error="simulated interruption"
+    )
+    executed = []
+
+    async def fake_run(task_id_arg):
+        task = store.get_task(task_id_arg)
+        assert task is not None and task["status"] == "queued"
+        assert store.claim_task(task_id_arg)
+        executed.append(task_id_arg)
+        if task_id_arg == prerequisite["id"]:
+            store.set_task_status(task_id_arg, "failed", error="prerequisite failed")
+            return {
+                "task_id": task_id_arg,
+                "status": "failed",
+                "result": "",
+                "tool_calls": 0,
+                "tool_attempts": 0,
+            }
+        assert task_id_arg == qa["id"]
+        answer = (
+            '{"verdict":"PASS","summary":"Reviewed available results.",'
+            '"findings":[]}'
+        )
+        store.set_task_status(task_id_arg, "succeeded", result={"answer": answer})
+        return {
+            "task_id": task_id_arg,
+            "status": "succeeded",
+            "result": answer,
+            "tool_calls": 0,
+            "tool_attempts": 0,
+        }
+
+    monkeypatch.setattr(app_module, "run_agent_task", fake_run)
+    result = await app_module.recover_agent_workflow(workflow["id"])
+
+    assert result["status"] == "partial"
+    assert executed == [prerequisite["id"], qa["id"]]
+    assert store.get_task(prerequisite["id"])["status"] == "failed"
+    assert store.get_task(dependent["id"])["status"] == "blocked"
+    assert store.get_task(qa["id"])["status"] == "succeeded"
+
+    saved = store.get_workflow(workflow["id"])
+    by_index = {
+        item["plan_index"]: item for item in saved["results"]["tasks"]
+    }
+    assert by_index[0]["status"] == "failed"
+    assert by_index[1]["status"] == "blocked"
+    assert by_index[1]["blocked_by"] == [0]
+    diagnostics = saved["results"]["diagnostics"]
+    assert diagnostics["task_counts"]["failed"] == 1
+    assert diagnostics["task_counts"]["blocked"] == 1
+    assert diagnostics["qa_status"] == "succeeded"
+    assert diagnostics["failure_count"] == 2
+    assert {item["category"] for item in diagnostics["failures"]} == {
+        "task_failed",
+        "dependency_blocked",
+    }
