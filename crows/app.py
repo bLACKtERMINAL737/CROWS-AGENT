@@ -1369,7 +1369,7 @@ def _rebuild_workflow_recovery_diagnostics(checkpoint: dict[str, Any]) -> dict[s
             reason = item.get("error") or (
                 "Prerequisite task did not succeed." if status == "blocked"
                 else "Execution outcome is uncertain; inspect task and tool journals."
-                if status == "unknown" else "Task did not succeed."
+                if status in {"unknown", "running"} else "Task did not succeed."
             )
             failures.append({
                 "plan_index": item.get("plan_index"),
