@@ -875,3 +875,54 @@ def test_created_file_is_removed_if_later_change_fails(tmp_path: Path, monkeypat
     assert not (workspace / "created.py").exists()
     assert source.read_text(encoding="utf-8") == original
     assert store.get_proposal(proposal["id"])["status"] == "approved"
+
+
+
+def test_concurrent_approve_and_reject_only_one_transition_wins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Approval and rejection racing on separate stores must have one winner."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    engine, store, workspace, _ = make_engine(tmp_path, "{}")
+    second_store = TaskStore(tmp_path / "crows.sqlite3")
+    second_engine = CodingEngine(workspace, second_store, FakeRouter("{}"))
+    proposal = store.create_proposal("concurrent decision", [])
+    barrier = Barrier(2)
+
+    first_set_status = store.set_proposal_status
+    second_set_status = second_store.set_proposal_status
+
+    def synchronized_first(proposal_id, status, error=None):
+        barrier.wait(timeout=5)
+        return first_set_status(proposal_id, status, error=error)
+
+    def synchronized_second(proposal_id, status, error=None):
+        barrier.wait(timeout=5)
+        return second_set_status(proposal_id, status, error=error)
+
+    monkeypatch.setattr(store, "set_proposal_status", synchronized_first)
+    monkeypatch.setattr(second_store, "set_proposal_status", synchronized_second)
+
+    def decide(engine_instance, decision):
+        try:
+            if decision == "approve":
+                return engine_instance.approve(proposal["id"])
+            return engine_instance.reject(proposal["id"])
+        except CodingError as exc:
+            return exc
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(
+            lambda args: decide(*args),
+            ((engine, "approve"), (second_engine, "reject")),
+        ))
+
+    successes = [result for result in results if isinstance(result, dict)]
+    conflicts = [result for result in results if isinstance(result, CodingError)]
+
+    assert len(successes) == 1
+    assert len(conflicts) == 1
+    assert successes[0]["status"] in {"approved", "rejected"}
+    assert store.get_proposal(proposal["id"])["status"] == successes[0]["status"]
