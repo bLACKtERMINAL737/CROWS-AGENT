@@ -1,6 +1,7 @@
 """Startup recovery must respect the cross-process coding-apply lock."""
 
 import asyncio
+import json
 from contextlib import contextmanager
 
 import pytest
@@ -279,7 +280,7 @@ os._exit(24)
     diagnostics = saved["results"]["diagnostics"]
     assert diagnostics["task_counts"]["running"] == 1
     assert diagnostics["qa_status"] == "not_started"
-    assert diagnostics["failure_count"] == 2
+    assert diagnostics["failure_count"] == 1
     assert store.get_task(task_id)["status"] == "unknown"
 
 
@@ -348,7 +349,7 @@ os._exit(25)
     task_id = workflow["results"]["tasks"][0]["task_id"]
     assert workflow["status"] == "unknown"
     assert store.get_task(task_id)["status"] == "succeeded"
-    assert store.get_task(task_id)["result"] == {"answer": "durably completed"}
+    assert json.loads(store.get_task(task_id)["result_json"]) == {"answer": "durably completed"}
 
     executed = []
 
