@@ -188,3 +188,181 @@ os._exit(23)
     assert store.list_tool_executions(task["id"]) == tools_before
     assert store.list_workflows() == [workflow_before]
     assert store.mark_interrupted_as_unknown() == 0
+
+
+
+@pytest.mark.asyncio
+async def test_process_crash_during_workflow_recovery_never_replays_running_specialist(
+    tmp_path, monkeypatch
+):
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    db_path = tmp_path / "workflow-recovery-crash.sqlite3"
+    child = """
+import os
+import sys
+from pathlib import Path
+from crows.store import TaskStore
+
+store = TaskStore(Path(sys.argv[1]))
+task = store.create_task("[research] Interrupted specialist", "Must not be replayed")
+workflow = store.create_workflow(
+    "Interrupted recovery",
+    [{
+        "title": "Interrupted specialist",
+        "input": "Must not be replayed",
+        "role": "research",
+        "depends_on": [],
+    }],
+)
+checkpoint = {
+    "tasks": [{
+        "plan_index": 0,
+        "task_id": task["id"],
+        "title": "Interrupted specialist",
+        "role": "research",
+        "status": "queued",
+        "depends_on": [],
+    }],
+    "qa_review": None,
+}
+store.update_workflow(
+    workflow["id"], "unknown", results=checkpoint, error="simulated interruption"
+)
+assert store.claim_workflow_recovery(workflow["id"])
+assert store.claim_task(task["id"])
+store.update_workflow(
+    workflow["id"], "running",
+    results={
+        "tasks": [{**checkpoint["tasks"][0], "status": "running"}],
+        "qa_review": None,
+    },
+)
+# Die after recovery claimed the workflow and specialist task, without shutdown hooks.
+os._exit(24)
+"""
+    process = subprocess.run(
+        [sys.executable, "-c", child, str(db_path)],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert process.returncode == 24, process.stderr
+
+    store = TaskStore(db_path)
+    run_application_startup(monkeypatch, store)
+    interrupted = store.list_workflows()[0]
+    task_id = interrupted["results"]["tasks"][0]["task_id"]
+    assert interrupted["status"] == "unknown"
+    assert store.get_task(task_id)["status"] == "unknown"
+
+    executed = []
+
+    async def must_not_replay(task_id_arg):
+        executed.append(task_id_arg)
+        raise AssertionError("uncertain specialist work must never be replayed")
+
+    monkeypatch.setattr(app_module, "run_agent_task", must_not_replay)
+    result = await app_module.recover_agent_workflow(interrupted["id"])
+
+    assert executed == []
+    assert result["status"] == "partial"
+    saved = store.get_workflow(interrupted["id"])
+    assert saved["status"] == "partial"
+    assert saved["results"]["tasks"][0]["status"] == "running"
+    assert saved["results"]["qa_review"]["status"] == "not_started"
+    diagnostics = saved["results"]["diagnostics"]
+    assert diagnostics["task_counts"]["running"] == 1
+    assert diagnostics["qa_status"] == "not_started"
+    assert diagnostics["failure_count"] == 2
+    assert store.get_task(task_id)["status"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_process_crash_after_specialist_success_before_checkpoint_rejects_recovery(
+    tmp_path, monkeypatch
+):
+    import subprocess
+    import sys
+    from pathlib import Path
+    import pytest
+    from fastapi import HTTPException
+
+    db_path = tmp_path / "workflow-success-checkpoint-crash.sqlite3"
+    child = """
+import os
+import sys
+from pathlib import Path
+from crows.store import TaskStore
+
+store = TaskStore(Path(sys.argv[1]))
+task = store.create_task("[research] Completed specialist", "Persist result before crash")
+workflow = store.create_workflow(
+    "Crash before workflow checkpoint",
+    [{
+        "title": "Completed specialist",
+        "input": "Persist result before crash",
+        "role": "research",
+        "depends_on": [],
+    }],
+)
+assert store.claim_task(task["id"])
+store.set_task_status(
+    task["id"], "succeeded", result={"answer": "durably completed"}
+)
+# The task journal committed, but the workflow checkpoint still says running.
+store.update_workflow(
+    workflow["id"], "running",
+    results={
+        "tasks": [{
+            "plan_index": 0,
+            "task_id": task["id"],
+            "title": "Completed specialist",
+            "role": "research",
+            "status": "running",
+            "depends_on": [],
+        }],
+        "qa_review": None,
+    },
+)
+os._exit(25)
+"""
+    process = subprocess.run(
+        [sys.executable, "-c", child, str(db_path)],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert process.returncode == 25, process.stderr
+
+    store = TaskStore(db_path)
+    run_application_startup(monkeypatch, store)
+    workflow = store.list_workflows()[0]
+    task_id = workflow["results"]["tasks"][0]["task_id"]
+    assert workflow["status"] == "unknown"
+    assert store.get_task(task_id)["status"] == "succeeded"
+    assert store.get_task(task_id)["result"] == {"answer": "durably completed"}
+
+    executed = []
+
+    async def must_not_execute(task_id_arg):
+        executed.append(task_id_arg)
+        raise AssertionError("recovery must reject the journal/checkpoint mismatch")
+
+    monkeypatch.setattr(app_module, "run_agent_task", must_not_execute)
+    with pytest.raises(HTTPException) as error:
+        await app_module.recover_agent_workflow(workflow["id"])
+
+    assert error.value.status_code == 409
+    assert "journal disagree" in error.value.detail.lower()
+    assert executed == []
+    saved = store.get_workflow(workflow["id"])
+    assert saved["status"] == "unknown"
+    assert saved["results"]["tasks"][0]["status"] == "running"
+    assert store.get_task(task_id)["status"] == "succeeded"
