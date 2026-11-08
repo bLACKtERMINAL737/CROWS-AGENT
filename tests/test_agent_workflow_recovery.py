@@ -876,3 +876,78 @@ async def test_recovery_blocks_dependents_after_prerequisite_failure_and_records
         "task_failed",
         "dependency_blocked",
     }
+
+
+@pytest.mark.asyncio
+async def test_recovery_cancellation_during_qa_persists_rebuilt_diagnostics(
+    tmp_path, monkeypatch
+):
+    store, workflow_id, task_id, qa_id = make_workflow(tmp_path, monkeypatch)
+    assert qa_id is not None
+
+    async def complete_specialist_then_cancel_qa(task_id_arg):
+        task = store.get_task(task_id_arg)
+        assert task is not None and store.claim_task(task_id_arg)
+        if task_id_arg == task_id:
+            store.set_task_status(
+                task_id_arg, "succeeded", result={"answer": "specialist evidence"}
+            )
+            return {
+                "task_id": task_id_arg,
+                "status": "succeeded",
+                "result": "specialist evidence",
+                "tool_calls": 0,
+                "tool_attempts": 0,
+            }
+        assert task_id_arg == qa_id
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(
+        app_module, "run_agent_task", complete_specialist_then_cancel_qa
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await app_module.recover_agent_workflow(workflow_id)
+
+    saved = store.get_workflow(workflow_id)
+    assert saved["status"] == "unknown"
+    assert saved["results"]["tasks"][0]["status"] == "succeeded"
+    assert saved["results"]["qa_review"]["status"] == "unknown"
+    assert store.get_task(task_id)["status"] == "succeeded"
+    assert store.get_task(qa_id)["status"] == "running"
+    diagnostics = saved["results"]["diagnostics"]
+    assert diagnostics["task_counts"]["succeeded"] == 1
+    assert diagnostics["qa_status"] == "unknown"
+    assert diagnostics["qa_verdict"] == "UNVERIFIED"
+    assert diagnostics["failure_count"] == 1
+    assert diagnostics["failures"][0]["category"] == "qa_review_failed"
+    assert diagnostics["failures"][0]["task_id"] == qa_id
+
+
+@pytest.mark.asyncio
+async def test_recovery_unexpected_error_rebuilds_diagnostics_from_task_journal(
+    tmp_path, monkeypatch
+):
+    store, workflow_id, task_id, qa_id = make_workflow(tmp_path, monkeypatch)
+    assert qa_id is not None
+
+    async def fail_after_durable_task_failure(task_id_arg):
+        assert task_id_arg == task_id
+        assert store.claim_task(task_id_arg)
+        store.set_task_status(task_id_arg, "failed", error="specialist failed")
+        raise RuntimeError("simulated recovery orchestration failure")
+
+    monkeypatch.setattr(app_module, "run_agent_task", fail_after_durable_task_failure)
+    with pytest.raises(RuntimeError, match="simulated recovery orchestration failure"):
+        await app_module.recover_agent_workflow(workflow_id)
+
+    saved = store.get_workflow(workflow_id)
+    assert saved["status"] == "unknown"
+    assert saved["results"]["tasks"][0]["status"] == "failed"
+    assert saved["results"]["qa_review"]["status"] == "queued"
+    diagnostics = saved["results"]["diagnostics"]
+    assert diagnostics["task_counts"]["failed"] == 1
+    assert diagnostics["qa_status"] == "queued"
+    assert diagnostics["failure_count"] == 1
+    assert diagnostics["failures"][0]["category"] == "task_failed"
+    assert diagnostics["failures"][0]["task_id"] == task_id
+
