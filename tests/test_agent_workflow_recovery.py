@@ -866,7 +866,7 @@ async def test_recovery_blocks_dependents_after_prerequisite_failure_and_records
     }
     assert by_index[0]["status"] == "failed"
     assert by_index[1]["status"] == "blocked"
-    assert by_index[1]["blocked_by"] == [0]
+    assert by_index[1]["depends_on"] == [0]
     diagnostics = saved["results"]["diagnostics"]
     assert diagnostics["task_counts"]["failed"] == 1
     assert diagnostics["task_counts"]["blocked"] == 1
