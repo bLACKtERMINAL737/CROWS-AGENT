@@ -65,16 +65,17 @@ def make_applying_proposal(store: TaskStore) -> str:
     return proposal["id"]
 
 
-def run_application_startup(monkeypatch, store: TaskStore) -> None:
+async def run_application_startup_async(monkeypatch, store: TaskStore) -> None:
     monkeypatch.setattr(app_module, "store", store)
     monkeypatch.setenv("CROWS_MESSAGING_WORKER_ENABLED", "false")
     monkeypatch.setenv("CROWS_SCHEDULER_WORKER_ENABLED", "false")
 
-    async def start_and_stop_application():
-        async with app_module.lifespan(app_module.app):
-            pass
+    async with app_module.lifespan(app_module.app):
+        pass
 
-    asyncio.run(start_and_stop_application())
+
+def run_application_startup(monkeypatch, store: TaskStore) -> None:
+    asyncio.run(run_application_startup_async(monkeypatch, store))
 
 
 def test_startup_marks_real_interrupted_proposal_for_manual_review(
@@ -254,7 +255,7 @@ os._exit(24)
     assert process.returncode == 24, process.stderr
 
     store = TaskStore(db_path)
-    run_application_startup(monkeypatch, store)
+    await run_application_startup_async(monkeypatch, store)
     interrupted = store.list_workflows()[0]
     task_id = interrupted["results"]["tasks"][0]["task_id"]
     assert interrupted["status"] == "unknown"
@@ -342,7 +343,7 @@ os._exit(25)
     assert process.returncode == 25, process.stderr
 
     store = TaskStore(db_path)
-    run_application_startup(monkeypatch, store)
+    await run_application_startup_async(monkeypatch, store)
     workflow = store.list_workflows()[0]
     task_id = workflow["results"]["tasks"][0]["task_id"]
     assert workflow["status"] == "unknown"
