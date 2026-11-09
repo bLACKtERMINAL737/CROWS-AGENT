@@ -325,6 +325,16 @@ class AgentPlanRequest(BaseModel):
     # retrying the same logical workflow request.
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=256)
 
+    @field_validator("idempotency_key")
+    @classmethod
+    def normalize_idempotency_key(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("idempotency_key must not be blank")
+        return value
+
 
 class AgentDelegateRequest(BaseModel):
     goal: str = Field(min_length=1, max_length=8_000)
