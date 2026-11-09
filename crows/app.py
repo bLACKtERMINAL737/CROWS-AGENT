@@ -87,69 +87,63 @@ async def lifespan(app: FastAPI):
                 "Another Crows server process already owns this database. "
                 "Stop that process or configure a separate database."
             )
-        with store.runtime_process_lock(blocking=False) as runtime_acquired:
-            if not runtime_acquired:
-                raise RuntimeError(
-                    "Another Crows server process already owns this database. "
-                    "Stop that process or configure a separate database."
-                )
-                changed = store.mark_interrupted_as_unknown()
-                if changed:
-                    logger.warning("Marked %s interrupted records as unknown", changed)
-                # Do not mislabel another local server process's live apply operation as
-                # interrupted. If the lock is busy, that process owns the apply lifecycle.
-                with store.coding_apply_lock(blocking=False) as acquired:
-                    if acquired:
-                        proposals = store.mark_interrupted_proposals_for_review()
-                        if proposals:
-                            logger.warning(
-                                "Found %s coding proposals interrupted during apply; manual workspace reconciliation is required",
-                                proposals,
-                            )
-                    else:
-                        logger.info(
-                            "Skipped coding proposal startup recovery because another process holds the apply lock"
-                        )
-                worker_task = None
-                if get_env("CROWS_MESSAGING_WORKER_ENABLED", "").lower() == "true":
-                    worker_task = asyncio.create_task(messaging_worker_loop())
-                    logger.info("Messaging outbox worker started")
-                inbound_worker_task = None
-                if get_env("CROWS_INBOUND_AGENT_WORKER_ENABLED", "").lower() == "true":
-                    inbound_worker_task = asyncio.create_task(
-                        inbound_agent_worker_loop(
-                            inbound_dispatch_store, messaging_store, store, router
-                        )
+        changed = store.mark_interrupted_as_unknown()
+        if changed:
+            logger.warning("Marked %s interrupted records as unknown", changed)
+        # Do not mislabel another local server process's live apply operation as
+        # interrupted. If the lock is busy, that process owns the apply lifecycle.
+        with store.coding_apply_lock(blocking=False) as acquired:
+            if acquired:
+                proposals = store.mark_interrupted_proposals_for_review()
+                if proposals:
+                    logger.warning(
+                        "Found %s coding proposals interrupted during apply; manual workspace reconciliation is required",
+                        proposals,
                     )
-                    logger.info("Inbound agent worker started")
-                scheduler_task = None
-                if get_env("CROWS_SCHEDULER_WORKER_ENABLED", "").lower() == "true":
-                    scheduler_task = asyncio.create_task(scheduler_worker_loop())
-                    logger.info("Scheduler worker started")
+            else:
+                logger.info(
+                    "Skipped coding proposal startup recovery because another process holds the apply lock"
+                )
+        worker_task = None
+        if get_env("CROWS_MESSAGING_WORKER_ENABLED", "").lower() == "true":
+            worker_task = asyncio.create_task(messaging_worker_loop())
+            logger.info("Messaging outbox worker started")
+        inbound_worker_task = None
+        if get_env("CROWS_INBOUND_AGENT_WORKER_ENABLED", "").lower() == "true":
+            inbound_worker_task = asyncio.create_task(
+                inbound_agent_worker_loop(
+                    inbound_dispatch_store, messaging_store, store, router
+                )
+            )
+            logger.info("Inbound agent worker started")
+        scheduler_task = None
+        if get_env("CROWS_SCHEDULER_WORKER_ENABLED", "").lower() == "true":
+            scheduler_task = asyncio.create_task(scheduler_worker_loop())
+            logger.info("Scheduler worker started")
+        try:
+            yield
+        finally:
+            if worker_task is not None:
+                worker_task.cancel()
                 try:
-                    yield
-                finally:
-                    if worker_task is not None:
-                        worker_task.cancel()
-                        try:
-                            await worker_task
-                        except asyncio.CancelledError:
-                            pass
-                        logger.info("Messaging outbox worker stopped")
-                    if inbound_worker_task is not None:
-                        inbound_worker_task.cancel()
-                        try:
-                            await inbound_worker_task
-                        except asyncio.CancelledError:
-                            pass
-                        logger.info("Inbound agent worker stopped")
-                    if scheduler_task is not None:
-                        scheduler_task.cancel()
-                        try:
-                            await scheduler_task
-                        except asyncio.CancelledError:
-                            pass
-                        logger.info("Scheduler worker stopped")
+                    await worker_task
+                except asyncio.CancelledError:
+                    pass
+                logger.info("Messaging outbox worker stopped")
+            if inbound_worker_task is not None:
+                inbound_worker_task.cancel()
+                try:
+                    await inbound_worker_task
+                except asyncio.CancelledError:
+                    pass
+                logger.info("Inbound agent worker stopped")
+            if scheduler_task is not None:
+                scheduler_task.cancel()
+                try:
+                    await scheduler_task
+                except asyncio.CancelledError:
+                    pass
+                logger.info("Scheduler worker stopped")
 
 
 app = FastAPI(title="Crows API", version="0.4.0",
