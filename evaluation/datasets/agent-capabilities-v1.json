@@ -97,7 +97,7 @@
       "id": "dependent-tasks-001",
       "category": "dependent_subtasks",
       "prompt": "Find the source fact first, then prepare a summary that depends on that fact; do not run the dependent summary if the source task fails.",
-      "fixture": "workflow_fixture",
+      "fixture": "evaluation/fixtures/dependent_subtasks/workflow.json",
       "expected": [
         "Represent prerequisite dependency explicitly",
         "Execute prerequisite before dependent task",
@@ -137,7 +137,7 @@
       "id": "recovery-001",
       "category": "recovery",
       "prompt": "Recover the interrupted fixture workflow and report which steps are safe to continue; never replay a step with an uncertain or terminal side effect.",
-      "fixture": "workflow_recovery_fixture",
+      "fixture": "evaluation/fixtures/recovery/workflow.json",
       "expected": [
         "Read durable task and workflow checkpoints",
         "Do not replay terminal or uncertain work",
