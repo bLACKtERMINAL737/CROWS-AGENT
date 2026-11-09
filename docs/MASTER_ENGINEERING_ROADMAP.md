@@ -108,6 +108,8 @@ Compare Auto vs Manual routing and candidate models on the same tasks. Do not cl
 - Add accessibility and mobile browser acceptance checks after core execution reliability is stable.
 
 ## Architecture guardrails
+
+- A SQLite database has one active Crows FastAPI server process at a time. The process owns a dedicated OS lock for its full lifespan; a second server using the same database fails startup rather than marking live task/tool/workflow records as interrupted. Separate server instances must use separate databases. This lock is for local filesystems, not network filesystems.
 - Keep planning, tool execution, durable state, approval, and final verification as distinct stages.
 - Treat model output, web pages, workspace content, and retrieved memories as untrusted input, not privileged instructions.
 - Validate every tool name and schema server-side. Bound argument/output size, recursion, call count, time, and concurrency.
