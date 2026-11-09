@@ -234,23 +234,25 @@ from pathlib import Path
 from crows.store import TaskStore
 
 store = TaskStore(Path(sys.argv[1]))
-task = store.create_task("Interrupted specialist", "must not be replayed")
-assert store.claim_task(task["id"])
-store.begin_tool(task["id"], "external.write", {"value": "uncertain"})
-workflow = store.create_workflow(
-    "Interrupted workflow",
-    [{"title": "Interrupted specialist", "input": "must not be replayed", "role": "research"}],
-)
-store.update_workflow(
-    workflow["id"],
-    "running",
-    results={
-        "tasks": [{"task_id": task["id"], "status": "running"}],
-        "qa_review": None,
-    },
-)
-# Simulate an abrupt process death: no application shutdown hooks run.
-os._exit(23)
+with store.runtime_process_lock() as acquired:
+    assert acquired
+    task = store.create_task("Interrupted specialist", "must not be replayed")
+    assert store.claim_task(task["id"])
+    store.begin_tool(task["id"], "external.write", {"value": "uncertain"})
+    workflow = store.create_workflow(
+        "Interrupted workflow",
+        [{"title": "Interrupted specialist", "input": "must not be replayed", "role": "research"}],
+    )
+    store.update_workflow(
+        workflow["id"],
+        "running",
+        results={
+            "tasks": [{"task_id": task["id"], "status": "running"}],
+            "qa_review": None,
+        },
+    )
+    # Simulate an abrupt process death: no application shutdown hooks run.
+    os._exit(23)
 """
     process = subprocess.run(
         [sys.executable, "-c", child, str(db_path)],
