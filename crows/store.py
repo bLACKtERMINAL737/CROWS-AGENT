@@ -271,6 +271,27 @@ class TaskStore:
             )
         return self.get_workflow(workflow_id)  # type: ignore[return-value]
 
+    def get_idempotent_workflow(
+        self, idempotency_key: str, request_hash: str
+    ) -> dict[str, Any] | None:
+        """Return the workflow for a matching key, or reject key reuse."""
+        with self.connect() as con:
+            row = con.execute(
+                "SELECT request_hash, workflow_id FROM workflow_idempotency "
+                "WHERE idempotency_key=?",
+                (idempotency_key,),
+            ).fetchone()
+        if row is None:
+            return None
+        if row["request_hash"] != request_hash:
+            raise IdempotencyConflictError(
+                "Idempotency key was already used for a different workflow request"
+            )
+        workflow = self.get_workflow(str(row["workflow_id"]))
+        if workflow is None:
+            raise RuntimeError("Idempotent workflow record disappeared")
+        return workflow
+
     def create_workflow_idempotent(
         self,
         idempotency_key: str,
