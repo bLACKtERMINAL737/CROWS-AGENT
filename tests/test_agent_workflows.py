@@ -900,11 +900,24 @@ async def test_orchestrate_rejects_idempotency_key_reused_for_different_goal(
     tmp_path, monkeypatch
 ):
     store, _router = configure(monkeypatch, tmp_path)
-    monkeypatch.setattr(
-        app_module,
-        "run_agent_task",
-        lambda task_id: None,
-    )
+    async def fake_run(task_id):
+        task = store.get_task(task_id)
+        assert task is not None and store.claim_task(task_id)
+        answer = (
+            '{"verdict":"PASS","summary":"Evidence is sufficient.","findings":[]}'
+            if task["title"].startswith("[qa_security]")
+            else "Verified specialist result"
+        )
+        store.set_task_status(task_id, "succeeded", result=answer)
+        return {
+            "task_id": task_id,
+            "status": "succeeded",
+            "result": answer,
+            "tool_calls": 0,
+            "tool_attempts": 0,
+        }
+
+    monkeypatch.setattr(app_module, "run_agent_task", fake_run)
 
     first = await app_module.orchestrate_agent_work(
         app_module.AgentPlanRequest(
