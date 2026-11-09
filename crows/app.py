@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import logging
 import json
 import hmac
+import hashlib
 import time
 import math
 import os
@@ -25,7 +26,7 @@ from pydantic import BaseModel, Field, field_validator
 from .coding import CodingEngine, CodingError
 from .config import Settings, get_env
 from .provider import ModelProvider, ModelRouter, ProviderNotConfigured
-from .store import TaskStore
+from .store import IdempotencyConflictError, TaskStore
 from .messaging_store import MessagingStore
 from .messaging_dispatch import InboundDispatchError, InboundDispatchStore
 from .messaging_runtime import inbound_agent_worker_loop
@@ -320,6 +321,9 @@ class AgentPlanRequest(BaseModel):
     # Supplying a previewed plan executes that exact, user-reviewed plan without
     # asking the model to silently regenerate or alter it.
     subtasks: list[dict[str, Any]] | None = Field(default=None, max_length=8)
+    # Optional for backward compatibility; clients should reuse this key when
+    # retrying the same logical workflow request.
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=256)
 
 
 class AgentDelegateRequest(BaseModel):
@@ -2039,7 +2043,40 @@ async def orchestrate_agent_work(request: AgentPlanRequest):
     max_concurrency = min(max(configured_concurrency, 1), 3)
     task_timeout_seconds = agent_task_timeout_seconds()
 
-    workflow = store.create_workflow(request.goal, subtasks)
+    if request.idempotency_key is not None:
+        request_fingerprint = hashlib.sha256(
+            json.dumps(
+                {"goal": request.goal, "subtasks": request.subtasks},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        try:
+            workflow, created = store.create_workflow_idempotent(
+                request.idempotency_key,
+                request_fingerprint,
+                request.goal,
+                subtasks,
+            )
+        except IdempotencyConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if not created:
+            saved_results = workflow["results"]
+            return {
+                "workflow_id": workflow["id"],
+                "goal": workflow["goal"],
+                "status": workflow["status"],
+                "control_state": workflow["control_state"],
+                "tasks": saved_results.get("tasks", []),
+                "qa_review": saved_results.get("qa_review"),
+                "workspace_modified": False,
+                "approval_required_before_changes": True,
+                "idempotent_replay": True,
+                "diagnostics": saved_results.get("diagnostics", {}),
+            }
+    else:
+        workflow = store.create_workflow(request.goal, subtasks)
     workflow_id = workflow["id"]
     outcomes_by_index: dict[int, dict[str, Any]] = {}
     pending = set(range(len(subtasks)))
