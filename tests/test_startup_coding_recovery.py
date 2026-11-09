@@ -368,3 +368,99 @@ os._exit(25)
     assert saved["status"] == "unknown"
     assert saved["results"]["tasks"][0]["status"] == "running"
     assert store.get_task(task_id)["status"] == "succeeded"
+
+@pytest.mark.parametrize("qa_terminal_status", ["succeeded", "failed"])
+@pytest.mark.asyncio
+async def test_process_crash_after_qa_terminal_commit_before_checkpoint_fails_closed(
+    tmp_path, monkeypatch, qa_terminal_status
+):
+    import subprocess
+    import sys
+    from pathlib import Path
+    from fastapi import HTTPException
+
+    db_path = tmp_path / f"workflow-qa-{qa_terminal_status}-checkpoint-crash.sqlite3"
+    child = """
+import os
+import sys
+from pathlib import Path
+from crows.store import TaskStore
+
+store = TaskStore(Path(sys.argv[1]))
+specialist = store.create_task("[research] Completed specialist", "Completed evidence")
+assert store.claim_task(specialist["id"])
+store.set_task_status(
+    specialist["id"], "succeeded", result={"answer": "specialist evidence"}
+)
+qa = store.create_task(
+    "[qa_security] Review specialist results", "Review specialist evidence"
+)
+assert store.claim_task(qa["id"])
+qa_status = sys.argv[2]
+if qa_status == "succeeded":
+    store.set_task_status(
+        qa["id"], "succeeded",
+        result={"answer": '{"verdict":"PASS","summary":"Reviewed evidence.","findings":[]}'},
+    )
+else:
+    store.set_task_status(qa["id"], "failed", error="simulated QA failure")
+workflow = store.create_workflow(
+    "Crash after QA terminal journal commit",
+    [{
+        "title": "Completed specialist",
+        "input": "Completed evidence",
+        "role": "research",
+        "depends_on": [],
+    }],
+)
+store.update_workflow(
+    workflow["id"],
+    "unknown",
+    results={
+        "tasks": [{
+            "plan_index": 0,
+            "task_id": specialist["id"],
+            "title": "Completed specialist",
+            "role": "research",
+            "status": "succeeded",
+            "depends_on": [],
+        }],
+        "qa_review": {"task_id": qa["id"], "status": "queued"},
+    },
+    error="simulated process interruption before QA checkpoint update",
+)
+os._exit(27)
+"""
+    process = subprocess.run(
+        [sys.executable, "-c", child, str(db_path), qa_terminal_status],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert process.returncode == 27, process.stderr
+
+    store = TaskStore(db_path)
+    await run_application_startup_async(monkeypatch, store)
+    workflow = store.list_workflows()[0]
+    qa_id = workflow["results"]["qa_review"]["task_id"]
+    assert store.get_task(qa_id)["status"] == qa_terminal_status
+
+    executed = []
+
+    async def must_not_replay(task_id_arg):
+        executed.append(task_id_arg)
+        raise AssertionError("a terminal QA task must never be replayed")
+
+    monkeypatch.setattr(app_module, "run_agent_task", must_not_replay)
+    with pytest.raises(HTTPException) as exc:
+        await app_module.recover_agent_workflow(workflow["id"])
+
+    assert exc.value.status_code == 409
+    assert executed == []
+    saved = store.get_workflow(workflow["id"])
+    assert saved["status"] == "unknown"
+    assert saved["results"]["qa_review"]["status"] == "queued"
+    assert store.get_task(qa_id)["status"] == qa_terminal_status
+
