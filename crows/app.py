@@ -2451,6 +2451,7 @@ async def orchestrate_agent_work(request: AgentPlanRequest):
             "max_concurrency": max_concurrency,
             "task_timeout_seconds": task_timeout_seconds,
             "diagnostics": checkpoint["diagnostics"],
+            "idempotent_replay": False,
         }
     except asyncio.CancelledError:
         # Cancellation can also arrive between scheduler phases, outside a worker.
