@@ -1,0 +1,4 @@
+[service]
+name = "crows"
+timeout_seconds = 15
+log_level = "debug"
