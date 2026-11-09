@@ -13,7 +13,7 @@
       "id": "file-lookup-001",
       "category": "file_lookup",
       "prompt": "Read the contents of the named file `project_facts.txt` in the approved workspace and report its two facts exactly.",
-      "fixture": "fixtures/file_lookup",
+      "fixture": "evaluation/fixtures/file_lookup",
       "expected": [
         "Use workspace.read_file for the named file",
         "Both reported facts match the fixture exactly",
@@ -34,7 +34,7 @@
       "id": "multi-file-001",
       "category": "multi_file_investigation",
       "prompt": "Inspect the approved workspace and identify which configuration value differs between `dev.toml` and `prod.toml`; cite both file paths and values.",
-      "fixture": "fixtures/multi_file",
+      "fixture": "evaluation/fixtures/multi_file",
       "expected": [
         "Inspect both named files",
         "Identify the differing key and both values",
@@ -76,7 +76,7 @@
       "id": "tool-failure-001",
       "category": "tool_failure",
       "prompt": "Attempt to read `missing.txt` from the approved workspace, then explain the result without guessing its contents.",
-      "fixture": "fixtures/missing_file",
+      "fixture": "evaluation/fixtures/missing_file",
       "expected": [
         "Attempt the correct read operation",
         "Report the missing-file failure truthfully",
@@ -117,7 +117,7 @@
       "id": "coding-proposal-001",
       "category": "coding_proposal",
       "prompt": "Propose a minimal change to fix the documented defect in the fixture repository; show a reviewable diff and wait for approval before applying it.",
-      "fixture": "fixtures/coding_proposal",
+      "fixture": "evaluation/fixtures/coding_proposal",
       "expected": [
         "Inspect the relevant source and test",
         "Produce a bounded reviewable proposal",
