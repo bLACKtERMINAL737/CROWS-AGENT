@@ -14,6 +14,10 @@ from .file_lock import file_lock
 STATUSES = {"queued", "running", "succeeded", "failed", "unknown"}
 
 
+class IdempotencyConflictError(ValueError):
+    """Raised when a key is reused for a different workflow request."""
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -130,6 +134,12 @@ class TaskStore:
               workflow_id TEXT PRIMARY KEY REFERENCES agent_workflows(id) ON DELETE CASCADE,
               state TEXT NOT NULL CHECK(state IN ('running','paused','cancel_requested','completed')),
               updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS workflow_idempotency (
+              idempotency_key TEXT PRIMARY KEY,
+              request_hash TEXT NOT NULL,
+              workflow_id TEXT NOT NULL REFERENCES agent_workflows(id),
+              created_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS messaging_session_routes (
               route_id TEXT PRIMARY KEY,
@@ -260,6 +270,84 @@ class TaskStore:
                 (workflow_id, "running", now),
             )
         return self.get_workflow(workflow_id)  # type: ignore[return-value]
+
+    def get_idempotent_workflow(
+        self, idempotency_key: str, request_hash: str
+    ) -> dict[str, Any] | None:
+        """Return the workflow for a matching key, or reject key reuse."""
+        with self.connect() as con:
+            row = con.execute(
+                "SELECT request_hash, workflow_id FROM workflow_idempotency "
+                "WHERE idempotency_key=?",
+                (idempotency_key,),
+            ).fetchone()
+        if row is None:
+            return None
+        if row["request_hash"] != request_hash:
+            raise IdempotencyConflictError(
+                "Idempotency key was already used for a different workflow request"
+            )
+        workflow = self.get_workflow(str(row["workflow_id"]))
+        if workflow is None:
+            raise RuntimeError("Idempotent workflow record disappeared")
+        return workflow
+
+    def create_workflow_idempotent(
+        self,
+        idempotency_key: str,
+        request_hash: str,
+        goal: str,
+        plan: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], bool]:
+        """Atomically create one workflow per key and request fingerprint.
+
+        Returns the existing workflow for a repeated identical request. A key
+        reused with different request content is rejected without changing state.
+        """
+        now, candidate_id = utc_now(), str(uuid4())
+        with self.connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            existing = con.execute(
+                "SELECT request_hash, workflow_id FROM workflow_idempotency "
+                "WHERE idempotency_key=?",
+                (idempotency_key,),
+            ).fetchone()
+            if existing is not None:
+                if existing["request_hash"] != request_hash:
+                    raise IdempotencyConflictError(
+                        "Idempotency key was already used for a different workflow request"
+                    )
+                workflow_id = str(existing["workflow_id"])
+                created = False
+            else:
+                con.execute(
+                    "INSERT INTO agent_workflows"
+                    "(id,goal,status,plan_json,results_json,created_at,updated_at) "
+                    "VALUES(?,?,?,?,?,?,?)",
+                    (
+                        candidate_id, goal, "running",
+                        json.dumps(plan, ensure_ascii=False),
+                        json.dumps({"tasks": [], "qa_review": None}, ensure_ascii=False),
+                        now, now,
+                    ),
+                )
+                con.execute(
+                    "INSERT INTO workflow_controls(workflow_id,state,updated_at) "
+                    "VALUES(?,?,?)",
+                    (candidate_id, "running", now),
+                )
+                con.execute(
+                    "INSERT INTO workflow_idempotency"
+                    "(idempotency_key,request_hash,workflow_id,created_at) "
+                    "VALUES(?,?,?,?)",
+                    (idempotency_key, request_hash, candidate_id, now),
+                )
+                workflow_id = candidate_id
+                created = True
+        workflow = self.get_workflow(workflow_id)
+        if workflow is None:
+            raise RuntimeError("Idempotent workflow record disappeared")
+        return workflow, created
 
     def get_workflow(self, workflow_id: str) -> dict[str, Any] | None:
         with self.connect() as con:

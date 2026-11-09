@@ -851,3 +851,91 @@ async def test_cancelled_workflow_does_not_schedule_remaining_tasks_or_qa(
     assert saved["control_state"] == "completed"
     assert saved["results"]["qa_review"]["status"] == "not_run"
     assert saved["results"]["tasks"][1]["status"] == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_orchestrate_retries_with_same_idempotency_key_return_saved_workflow(
+    tmp_path, monkeypatch
+):
+    store, router = configure(monkeypatch, tmp_path)
+    executions = []
+
+    async def fake_run(task_id):
+        task = store.get_task(task_id)
+        assert task is not None and store.claim_task(task_id)
+        executions.append(task_id)
+        answer = (
+            '{"verdict":"PASS","summary":"Evidence is sufficient.","findings":[]}'
+            if task["title"].startswith("[qa_security]")
+            else "Verified specialist result"
+        )
+        store.set_task_status(task_id, "succeeded", result=answer)
+        return {
+            "task_id": task_id,
+            "status": "succeeded",
+            "result": answer,
+            "tool_calls": 0,
+            "tool_attempts": 0,
+        }
+
+    monkeypatch.setattr(app_module, "run_agent_task", fake_run)
+    request = app_module.AgentPlanRequest(
+        goal="Inspect the repository",
+        idempotency_key="workflow-request-unique",
+    )
+
+    first = await app_module.orchestrate_agent_work(request)
+    executions_after_first = list(executions)
+    replay = await app_module.orchestrate_agent_work(request)
+
+    assert first["workflow_id"] == replay["workflow_id"]
+    assert first["status"] == replay["status"] == "succeeded"
+    assert replay["idempotent_replay"] is True
+    assert executions == executions_after_first
+    assert len(router.planning_calls) == 1
+    assert len(store.list_workflows()) == 1
+
+
+@pytest.mark.asyncio
+async def test_orchestrate_rejects_idempotency_key_reused_for_different_goal(
+    tmp_path, monkeypatch
+):
+    store, router = configure(monkeypatch, tmp_path)
+    async def fake_run(task_id):
+        task = store.get_task(task_id)
+        assert task is not None and store.claim_task(task_id)
+        answer = (
+            '{"verdict":"PASS","summary":"Evidence is sufficient.","findings":[]}'
+            if task["title"].startswith("[qa_security]")
+            else "Verified specialist result"
+        )
+        store.set_task_status(task_id, "succeeded", result=answer)
+        return {
+            "task_id": task_id,
+            "status": "succeeded",
+            "result": answer,
+            "tool_calls": 0,
+            "tool_attempts": 0,
+        }
+
+    monkeypatch.setattr(app_module, "run_agent_task", fake_run)
+
+    first = await app_module.orchestrate_agent_work(
+        app_module.AgentPlanRequest(
+            goal="Inspect repository A",
+            idempotency_key="workflow-request-conflict",
+        )
+    )
+    assert first["workflow_id"]
+
+    with pytest.raises(HTTPException) as error:
+        await app_module.orchestrate_agent_work(
+            app_module.AgentPlanRequest(
+                goal="Inspect repository B",
+                idempotency_key="workflow-request-conflict",
+            )
+        )
+
+    assert error.value.status_code == 409
+    assert len(router.planning_calls) == 1
+    assert len(store.list_workflows()) == 1
