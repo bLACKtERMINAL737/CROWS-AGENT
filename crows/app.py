@@ -2035,6 +2035,36 @@ async def preview_agent_plan(request: AgentPlanRequest):
 @app.post("/agents/orchestrate")
 async def orchestrate_agent_work(request: AgentPlanRequest):
     """Execute a generated or explicitly reviewed dependency-ready plan."""
+    request_fingerprint = None
+    if request.idempotency_key is not None:
+        request_fingerprint = hashlib.sha256(
+            json.dumps(
+                {"goal": request.goal, "subtasks": request.subtasks},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        try:
+            existing = store.get_idempotent_workflow(
+                request.idempotency_key, request_fingerprint
+            )
+        except IdempotencyConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if existing is not None:
+            saved_results = existing["results"]
+            return {
+                "workflow_id": existing["id"],
+                "goal": existing["goal"],
+                "status": existing["status"],
+                "control_state": existing["control_state"],
+                "tasks": saved_results.get("tasks", []),
+                "qa_review": saved_results.get("qa_review"),
+                "workspace_modified": False,
+                "approval_required_before_changes": True,
+                "idempotent_replay": True,
+                "diagnostics": saved_results.get("diagnostics", {}),
+            }
     if request.subtasks is None:
         subtasks = await _generate_agent_plan(request.goal)
     else:
@@ -2054,14 +2084,6 @@ async def orchestrate_agent_work(request: AgentPlanRequest):
     task_timeout_seconds = agent_task_timeout_seconds()
 
     if request.idempotency_key is not None:
-        request_fingerprint = hashlib.sha256(
-            json.dumps(
-                {"goal": request.goal, "subtasks": request.subtasks},
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()
         try:
             workflow, created = store.create_workflow_idempotent(
                 request.idempotency_key,
