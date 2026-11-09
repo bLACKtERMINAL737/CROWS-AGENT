@@ -61,14 +61,22 @@ def test_concurrent_duplicate_requests_create_only_one_workflow(tmp_path: Path):
     assert len(store.list_workflows()) == 1
 
 
-def test_terminal_workflow_is_returned_without_reopening_on_retry(tmp_path: Path):
-    store = TaskStore(tmp_path / "workflow-idempotency-terminal.sqlite3")
+@pytest.mark.parametrize("status", ["succeeded", "unknown"])
+def test_terminal_or_uncertain_workflow_is_not_reopened_on_retry(
+    tmp_path: Path, status: str
+):
+    store = TaskStore(tmp_path / f"workflow-idempotency-{status}.sqlite3")
     plan = [{"title": "Inspect", "input": "Read", "role": "research", "depends_on": []}]
     workflow, created = store.create_workflow_idempotent(
         "request-4", "fingerprint-a", "Inspect repository", plan
     )
     assert created is True
-    store.update_workflow(workflow["id"], "succeeded", results={"tasks": [], "qa_review": None})
+    store.update_workflow(
+        workflow["id"],
+        status,
+        results={"tasks": [], "qa_review": None},
+        error="Outcome requires inspection." if status == "unknown" else None,
+    )
 
     replay, replay_created = store.create_workflow_idempotent(
         "request-4", "fingerprint-a", "Inspect repository", plan
@@ -76,5 +84,5 @@ def test_terminal_workflow_is_returned_without_reopening_on_retry(tmp_path: Path
 
     assert replay_created is False
     assert replay["id"] == workflow["id"]
-    assert replay["status"] == "succeeded"
+    assert replay["status"] == status
     assert len(store.list_workflows()) == 1
