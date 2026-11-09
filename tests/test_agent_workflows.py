@@ -857,7 +857,7 @@ async def test_cancelled_workflow_does_not_schedule_remaining_tasks_or_qa(
 async def test_orchestrate_retries_with_same_idempotency_key_return_saved_workflow(
     tmp_path, monkeypatch
 ):
-    store, _router = configure(monkeypatch, tmp_path)
+    store, router = configure(monkeypatch, tmp_path)
     executions = []
 
     async def fake_run(task_id):
@@ -892,6 +892,7 @@ async def test_orchestrate_retries_with_same_idempotency_key_return_saved_workfl
     assert first["status"] == replay["status"] == "succeeded"
     assert replay["idempotent_replay"] is True
     assert executions == executions_after_first
+    assert len(router.planning_calls) == 1
     assert len(store.list_workflows()) == 1
 
 
