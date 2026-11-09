@@ -900,7 +900,7 @@ async def test_orchestrate_retries_with_same_idempotency_key_return_saved_workfl
 async def test_orchestrate_rejects_idempotency_key_reused_for_different_goal(
     tmp_path, monkeypatch
 ):
-    store, _router = configure(monkeypatch, tmp_path)
+    store, router = configure(monkeypatch, tmp_path)
     async def fake_run(task_id):
         task = store.get_task(task_id)
         assert task is not None and store.claim_task(task_id)
@@ -937,4 +937,5 @@ async def test_orchestrate_rejects_idempotency_key_reused_for_different_goal(
         )
 
     assert error.value.status_code == 409
+    assert len(router.planning_calls) == 1
     assert len(store.list_workflows()) == 1
