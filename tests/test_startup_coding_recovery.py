@@ -10,15 +10,22 @@ import crows.app as app_module
 
 
 class StartupRecoveryStore:
-    def __init__(self, *, lock_acquired: bool):
+    def __init__(self, *, lock_acquired: bool, runtime_lock_acquired: bool = True):
         self.lock_acquired = lock_acquired
+        self.runtime_lock_acquired = runtime_lock_acquired
         self.unknown_recovery_calls = 0
         self.proposal_recovery_calls = 0
         self.lock_blocking_arguments = []
+        self.runtime_lock_blocking_arguments = []
 
     def mark_interrupted_as_unknown(self):
         self.unknown_recovery_calls += 1
         return 0
+
+    @contextmanager
+    def runtime_process_lock(self, *, blocking=True):
+        self.runtime_lock_blocking_arguments.append(blocking)
+        yield self.runtime_lock_acquired
 
     @contextmanager
     def coding_apply_lock(self, *, blocking=True):
@@ -49,8 +56,32 @@ def test_startup_recovery_only_runs_when_apply_lock_is_acquired(
     asyncio.run(start_and_stop_application())
 
     assert fake_store.unknown_recovery_calls == 1
+    assert fake_store.runtime_lock_blocking_arguments == [False]
     assert fake_store.lock_blocking_arguments == [False]
     assert fake_store.proposal_recovery_calls == expected_proposal_recovery_calls
+
+
+
+
+def test_startup_fails_closed_when_another_server_owns_the_database(monkeypatch):
+    fake_store = StartupRecoveryStore(
+        lock_acquired=True,
+        runtime_lock_acquired=False,
+    )
+    monkeypatch.setattr(app_module, "store", fake_store)
+    monkeypatch.setenv("CROWS_MESSAGING_WORKER_ENABLED", "false")
+    monkeypatch.setenv("CROWS_SCHEDULER_WORKER_ENABLED", "false")
+
+    async def start_and_stop_application():
+        async with app_module.lifespan(app_module.app):
+            pass
+
+    with pytest.raises(RuntimeError, match="already owns this database"):
+        asyncio.run(start_and_stop_application())
+
+    assert fake_store.unknown_recovery_calls == 0
+    assert fake_store.proposal_recovery_calls == 0
+    assert fake_store.lock_blocking_arguments == []
 
 
 from crows.store import TaskStore
@@ -114,6 +145,80 @@ def test_startup_does_not_recover_proposal_while_real_apply_lock_is_held(
 
 
 
+def test_live_server_ownership_prevents_second_startup_from_marking_work_unknown(
+    tmp_path, monkeypatch
+):
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    db_path = tmp_path / "live-runtime-owner.sqlite3"
+    store = TaskStore(db_path)
+    task = store.create_task("Live specialist", "Must remain running")
+    assert store.claim_task(task["id"])
+    store.begin_tool(task["id"], "external.write", {"value": "in progress"})
+    workflow = store.create_workflow(
+        "Live workflow",
+        [{"title": "Live specialist", "input": "Must remain running", "role": "research"}],
+    )
+    store.update_workflow(
+        workflow["id"],
+        "running",
+        results={
+            "tasks": [{"task_id": task["id"], "status": "running"}],
+            "qa_review": None,
+        },
+    )
+
+    child = """
+import asyncio
+import os
+import sys
+from pathlib import Path
+import crows.app as app_module
+from crows.store import TaskStore
+
+store = TaskStore(Path(sys.argv[1]))
+app_module.store = store
+os.environ["CROWS_MESSAGING_WORKER_ENABLED"] = "false"
+os.environ["CROWS_SCHEDULER_WORKER_ENABLED"] = "false"
+
+async def main():
+    try:
+        async with app_module.lifespan(app_module.app):
+            pass
+    except RuntimeError as exc:
+        print(str(exc), flush=True)
+    else:
+        raise SystemExit("second server unexpectedly acquired database ownership")
+
+asyncio.run(main())
+"""
+    with store.runtime_process_lock(blocking=False) as acquired:
+        assert acquired is True
+        process = subprocess.run(
+            [sys.executable, "-c", child, str(db_path)],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        assert process.returncode == 0, process.stderr
+        assert "already owns this database" in process.stdout
+
+        assert store.get_task(task["id"])["status"] == "running"
+        assert store.list_tool_executions(task["id"])[0]["status"] == "running"
+        assert store.get_workflow(workflow["id"])["status"] == "running"
+
+    # Once the owning process releases its lifetime lock, startup can safely
+    # reconcile records left running by a process that has exited.
+    run_application_startup(monkeypatch, store)
+    assert store.get_task(task["id"])["status"] == "unknown"
+    assert store.list_tool_executions(task["id"])[0]["status"] == "unknown"
+    assert store.get_workflow(workflow["id"])["status"] == "unknown"
+
+
 def test_process_crash_is_reconciled_by_next_application_startup(
     tmp_path, monkeypatch
 ):
@@ -129,23 +234,25 @@ from pathlib import Path
 from crows.store import TaskStore
 
 store = TaskStore(Path(sys.argv[1]))
-task = store.create_task("Interrupted specialist", "must not be replayed")
-assert store.claim_task(task["id"])
-store.begin_tool(task["id"], "external.write", {"value": "uncertain"})
-workflow = store.create_workflow(
-    "Interrupted workflow",
-    [{"title": "Interrupted specialist", "input": "must not be replayed", "role": "research"}],
-)
-store.update_workflow(
-    workflow["id"],
-    "running",
-    results={
-        "tasks": [{"task_id": task["id"], "status": "running"}],
-        "qa_review": None,
-    },
-)
-# Simulate an abrupt process death: no application shutdown hooks run.
-os._exit(23)
+with store.runtime_process_lock() as acquired:
+    assert acquired
+    task = store.create_task("Interrupted specialist", "must not be replayed")
+    assert store.claim_task(task["id"])
+    store.begin_tool(task["id"], "external.write", {"value": "uncertain"})
+    workflow = store.create_workflow(
+        "Interrupted workflow",
+        [{"title": "Interrupted specialist", "input": "must not be replayed", "role": "research"}],
+    )
+    store.update_workflow(
+        workflow["id"],
+        "running",
+        results={
+            "tasks": [{"task_id": task["id"], "status": "running"}],
+            "qa_review": None,
+        },
+    )
+    # Simulate an abrupt process death: no application shutdown hooks run.
+    os._exit(23)
 """
     process = subprocess.run(
         [sys.executable, "-c", child, str(db_path)],

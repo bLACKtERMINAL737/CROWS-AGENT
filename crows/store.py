@@ -42,6 +42,23 @@ class TaskStore:
         finally:
             os.close(fd)
 
+    @contextmanager
+    def runtime_process_lock(self, blocking: bool = True):
+        """Own this database for one FastAPI server process lifetime.
+
+        A second server process using the same SQLite database must fail
+        startup rather than reconcile another process's live task journal.
+        The OS releases this lock after a crash. This is intended for local
+        filesystems; do not place the database on a network filesystem.
+        """
+        lock_path = self.db_path.with_name(self.db_path.name + ".runtime.lock")
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            with file_lock(fd, blocking=blocking) as acquired:
+                yield acquired
+        finally:
+            os.close(fd)
+
     def connect(self) -> sqlite3.Connection:
         con = sqlite3.connect(self.db_path, timeout=10)
         con.row_factory = sqlite3.Row
