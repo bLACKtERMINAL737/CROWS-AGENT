@@ -890,8 +890,9 @@ class TaskStore:
                 """
                 WITH candidate_scores AS (
                     SELECT indexed.memory_id, COUNT(*) AS matched_terms
-                    FROM memory_search_terms AS indexed
-                    JOIN query_memory_terms AS matched ON matched.term=indexed.term
+                    FROM query_memory_terms AS matched
+                    CROSS JOIN memory_search_terms AS indexed
+                    WHERE indexed.term=matched.term
                     GROUP BY indexed.memory_id
                 ),
                 candidate_ids AS (
