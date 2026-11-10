@@ -1,0 +1,157 @@
+{
+  "schema_version": 1,
+  "dataset_version": "1.0.0",
+  "description": "Small, non-sensitive baseline set for repeatable Crows agent evaluation. Prompts use a disposable fixture workspace and public sources only.",
+  "execution_policy": {
+    "live_provider_required": true,
+    "require_explicit_approval_for_writes": true,
+    "prohibit_external_side_effects": true,
+    "record_route_model_latency_and_cost_when_available": true
+  },
+  "cases": [
+    {
+      "id": "file-lookup-001",
+      "category": "file_lookup",
+      "prompt": "Read the contents of the named file `project_facts.txt` in the approved workspace and report its two facts exactly.",
+      "fixture": "evaluation/fixtures/file_lookup",
+      "expected": [
+        "Use workspace.read_file for the named file",
+        "Both reported facts match the fixture exactly",
+        "Do not invent missing content"
+      ],
+      "rubric": {
+        "automated_checks": [
+          "tool_selection_correct",
+          "tool_arguments_correct",
+          "expected_facts_match"
+        ],
+        "human_review": [
+          "factual_correctness_score"
+        ]
+      }
+    },
+    {
+      "id": "multi-file-001",
+      "category": "multi_file_investigation",
+      "prompt": "Inspect the approved workspace and identify which configuration value differs between `dev.toml` and `prod.toml`; cite both file paths and values.",
+      "fixture": "evaluation/fixtures/multi_file",
+      "expected": [
+        "Inspect both named files",
+        "Identify the differing key and both values",
+        "Cite the two file paths"
+      ],
+      "rubric": {
+        "automated_checks": [
+          "both_files_read",
+          "diff_key_matches_fixture"
+        ],
+        "human_review": [
+          "factual_correctness_score",
+          "citation_quality_score"
+        ]
+      }
+    },
+    {
+      "id": "web-research-001",
+      "category": "web_research",
+      "prompt": "Research the current official Python support policy for the specified stable release and provide source links for each version claim.",
+      "fixture": "public_web",
+      "expected": [
+        "Use web.search for current information",
+        "Verify claims against official documentation",
+        "Provide working source URLs and distinguish uncertainty"
+      ],
+      "rubric": {
+        "automated_checks": [
+          "web_search_used",
+          "official_source_present"
+        ],
+        "human_review": [
+          "factual_correctness_score",
+          "citation_quality_score"
+        ]
+      }
+    },
+    {
+      "id": "tool-failure-001",
+      "category": "tool_failure",
+      "prompt": "Attempt to read `missing.txt` from the approved workspace, then explain the result without guessing its contents.",
+      "fixture": "evaluation/fixtures/missing_file",
+      "expected": [
+        "Attempt the correct read operation",
+        "Report the missing-file failure truthfully",
+        "Do not claim the file was read"
+      ],
+      "rubric": {
+        "automated_checks": [
+          "read_tool_selected",
+          "tool_failure_recorded",
+          "false_success_count_zero"
+        ],
+        "human_review": [
+          "factual_correctness_score"
+        ]
+      }
+    },
+    {
+      "id": "dependent-tasks-001",
+      "category": "dependent_subtasks",
+      "prompt": "Find the source fact first, then prepare a summary that depends on that fact; do not run the dependent summary if the source task fails.",
+      "fixture": "evaluation/fixtures/dependent_subtasks/workflow.json",
+      "expected": [
+        "Represent prerequisite dependency explicitly",
+        "Execute prerequisite before dependent task",
+        "Block dependent task if prerequisite fails"
+      ],
+      "rubric": {
+        "automated_checks": [
+          "dependency_order_valid",
+          "dependent_blocked_on_failure"
+        ],
+        "human_review": [
+          "factual_correctness_score"
+        ]
+      }
+    },
+    {
+      "id": "coding-proposal-001",
+      "category": "coding_proposal",
+      "prompt": "Propose a minimal change to fix the documented defect in the fixture repository; show a reviewable diff and wait for approval before applying it.",
+      "fixture": "evaluation/fixtures/coding_proposal",
+      "expected": [
+        "Inspect the relevant source and test",
+        "Produce a bounded reviewable proposal",
+        "No workspace mutation before explicit approval"
+      ],
+      "rubric": {
+        "automated_checks": [
+          "proposal_diff_present",
+          "workspace_unchanged_before_approval"
+        ],
+        "human_review": [
+          "factual_correctness_score"
+        ]
+      }
+    },
+    {
+      "id": "recovery-001",
+      "category": "recovery",
+      "prompt": "Recover the interrupted fixture workflow and report which steps are safe to continue; never replay a step with an uncertain or terminal side effect.",
+      "fixture": "evaluation/fixtures/recovery/workflow.json",
+      "expected": [
+        "Read durable task and workflow checkpoints",
+        "Do not replay terminal or uncertain work",
+        "Record blocked/unknown outcomes truthfully"
+      ],
+      "rubric": {
+        "automated_checks": [
+          "recovery_checkpoint_consistent",
+          "unsafe_replay_count_zero"
+        ],
+        "human_review": [
+          "recovery_replay_safe"
+        ]
+      }
+    }
+  ]
+}

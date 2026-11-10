@@ -1,0 +1,20 @@
+{
+  "workflow_status": "unknown",
+  "tasks": [
+    {
+      "id": "completed-step",
+      "status": "succeeded",
+      "replay": "forbidden"
+    },
+    {
+      "id": "uncertain-step",
+      "status": "unknown",
+      "replay": "forbidden"
+    },
+    {
+      "id": "not-started-step",
+      "status": "queued",
+      "replay": "requires_reconciliation"
+    }
+  ]
+}
