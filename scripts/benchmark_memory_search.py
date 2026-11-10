@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Reproducible, non-gating benchmark for SQLite-backed memory search.
+"""Reproducible, non-gating benchmarks for representative SQLite memory searches.
 
 Run from the repository root:
     python scripts/benchmark_memory_search.py
     python scripts/benchmark_memory_search.py --sizes 1000 10000 50000 --iterations 50
 
-The script creates temporary databases, seeds them in batches, verifies each
-search result, and reports latency percentiles as JSON. Timings are diagnostic;
-they are deliberately not CI pass/fail thresholds.
+Each workload uses a temporary database and verifies its results. EXPLAIN QUERY
+PLAN runs the exact SQL statement used by TaskStore.search_memories(). Timings
+are diagnostic and are not CI pass/fail thresholds.
 """
 from __future__ import annotations
 
@@ -18,8 +18,18 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
+from typing import Any, Callable
 
+from crows.memory_search import MEMORY_SEARCH_SQL
 from crows.store import TaskStore, _memory_search_tokens
+
+
+WORKLOADS = {
+    "rare_term": ("CROWS_BENCHMARK_NEEDLE", "rare"),
+    "common_term": ("common", "common"),
+    "multi_term": ("multi_alpha multi_beta", "multi"),
+    "no_match": ("CROWS_BENCHMARK_ABSENT", "none"),
+}
 
 
 def percentile(values: list[float], fraction: float) -> float:
@@ -28,21 +38,37 @@ def percentile(values: list[float], fraction: float) -> float:
     return ordered[index]
 
 
-def seed_store(store: TaskStore, memory_count: int) -> str:
+def content_for(index: int, workload: str) -> str:
+    if workload == "rare":
+        return "CROWS_BENCHMARK_NEEDLE unique searchable target" if index == 0 else (
+            f"Unrelated archive note number {index} with routine project details"
+        )
+    if workload == "common":
+        return (
+            f"common project archive note number {index}"
+            if index % 10 < 7
+            else f"unrelated archive note number {index}"
+        )
+    if workload == "multi":
+        if index == 0:
+            return "multi_alpha multi_beta exact two-term target"
+        if index % 3 == 1:
+            return f"multi_alpha single-term archive {index}"
+        if index % 3 == 2:
+            return f"multi_beta single-term archive {index}"
+        return f"unrelated archive note {index}"
+    return f"ordinary archive note number {index}"
+
+
+def seed_store(store: TaskStore, memory_count: int, workload: str) -> str | None:
     target_id = str(uuid.UUID(int=1))
     now = "2026-01-01T00:00:00+00:00"
     memories = []
     terms = []
     for index in range(memory_count):
         memory_id = target_id if index == 0 else str(uuid.UUID(int=index + 1))
-        content = (
-            "CROWS_BENCHMARK_NEEDLE unique searchable target"
-            if index == 0
-            else f"Unrelated archive note number {index} with routine project details"
-        )
-        memories.append(
-            (memory_id, "benchmark", content, "benchmark", "[]", now, now)
-        )
+        content = content_for(index, workload)
+        memories.append((memory_id, "benchmark", content, "benchmark", "[]", now, now))
         terms.extend(
             (memory_id, token)
             for token in _memory_search_tokens("benchmark", content)
@@ -58,67 +84,63 @@ def seed_store(store: TaskStore, memory_count: int) -> str:
             "INSERT INTO memory_search_terms(memory_id,term) VALUES(?,?)",
             terms,
         )
-    return target_id
+    return target_id if workload in {"rare", "multi"} else None
 
 
-def benchmark_size(memory_count: int, iterations: int) -> dict[str, object]:
+def verify_results(
+    results: list[dict[str, Any]], workload: str, memory_count: int, target_id: str | None
+) -> bool:
+    if workload == "rare":
+        return bool(results) and results[0]["id"] == target_id and len(results) == 1
+    if workload == "common":
+        expected_count = sum(1 for index in range(memory_count) if index % 10 < 7)
+        return len(results) == min(5, expected_count) and all(
+            "common" in _memory_search_tokens(item["content"]) for item in results
+        )
+    if workload == "multi":
+        return bool(results) and results[0]["id"] == target_id
+    return results == []
+
+
+def explain_production_query(store: TaskStore, query: str) -> list[str]:
+    query_terms = sorted(_memory_search_tokens(query))
+    with store.connect() as con:
+        con.execute(
+            "CREATE TEMP TABLE query_memory_terms(term TEXT PRIMARY KEY) WITHOUT ROWID"
+        )
+        con.executemany(
+            "INSERT INTO query_memory_terms(term) VALUES(?)",
+            [(term,) for term in query_terms],
+        )
+        rows = con.execute(
+            "EXPLAIN QUERY PLAN " + MEMORY_SEARCH_SQL,
+            (0, 0, 5),
+        ).fetchall()
+    return [row["detail"] for row in rows]
+
+
+def benchmark_workload(
+    memory_count: int, iterations: int, workload_name: str, query: str, workload: str
+) -> dict[str, object]:
     with tempfile.TemporaryDirectory(prefix="crows-memory-bench-") as temp_dir:
         store = TaskStore(Path(temp_dir) / "benchmark.sqlite3")
-        expected_id = seed_store(store, memory_count)
-
-        query = "CROWS_BENCHMARK_NEEDLE"
-        query_term = "crows_benchmark_needle"
-        with store.connect() as con:
-            con.execute(
-                "CREATE TEMP TABLE query_memory_terms(term TEXT PRIMARY KEY) WITHOUT ROWID"
-            )
-            con.execute(
-                "INSERT INTO query_memory_terms(term) VALUES(?)", (query_term,)
-            )
-            plan_rows = con.execute(
-                """
-                EXPLAIN QUERY PLAN
-                WITH candidate_scores AS (
-                    SELECT indexed.memory_id, COUNT(*) AS matched_terms
-                    FROM query_memory_terms AS matched
-                    CROSS JOIN memory_search_terms AS indexed
-                    WHERE indexed.term=matched.term
-                    GROUP BY indexed.memory_id
-                ),
-                candidate_ids AS (
-                    SELECT memory_id FROM candidate_scores
-                    UNION
-                    SELECT id AS memory_id FROM memories
-                    WHERE 0 AND source='explicit_chat_request'
-                )
-                SELECT m.*, (
-                    COALESCE(candidate_scores.matched_terms, 0)
-                    + CASE WHEN 0 AND m.source='explicit_chat_request' THEN 3 ELSE 0 END
-                ) AS search_score
-                FROM candidate_ids
-                JOIN memories AS m ON m.id=candidate_ids.memory_id
-                LEFT JOIN candidate_scores ON candidate_scores.memory_id=m.id
-                ORDER BY search_score DESC, m.updated_at DESC, m.id DESC
-                LIMIT 5
-                """
-            ).fetchall()
-        query_plan = [row["detail"] for row in plan_rows]
+        target_id = seed_store(store, memory_count, workload)
+        query_plan = explain_production_query(store, query)
         index_used = any(
-            "SEARCH indexed USING COVERING INDEX idx_memory_search_terms_term"
-            in detail
+            "SEARCH indexed USING COVERING INDEX idx_memory_search_terms_term" in detail
             for detail in query_plan
         )
         if not index_used:
             raise RuntimeError(
-                "SQLite did not select the expected memory term index: "
+                f"Production query did not select the expected term index for {workload_name}: "
                 + "; ".join(query_plan)
             )
 
         for _ in range(5):
             results = store.search_memories(query, limit=5)
-            if not results or results[0]["id"] != expected_id:
+            if not verify_results(results, workload, memory_count, target_id):
                 raise RuntimeError(
-                    f"Search correctness check failed for dataset size {memory_count}"
+                    f"Search correctness check failed for {workload_name} at size {memory_count}"
                 )
 
         samples_ms = []
@@ -126,45 +148,41 @@ def benchmark_size(memory_count: int, iterations: int) -> dict[str, object]:
             started = time.perf_counter()
             results = store.search_memories(query, limit=5)
             elapsed_ms = (time.perf_counter() - started) * 1000
-            if not results or results[0]["id"] != expected_id:
+            if not verify_results(results, workload, memory_count, target_id):
                 raise RuntimeError(
-                    f"Search result changed during benchmark at size {memory_count}"
+                    f"Search result changed during {workload_name} benchmark at size {memory_count}"
                 )
             samples_ms.append(elapsed_ms)
 
         return {
+            "workload": workload_name,
             "memory_count": memory_count,
             "iterations": iterations,
+            "result_count": len(results),
             "p50_ms": round(statistics.median(samples_ms), 3),
             "p95_ms": round(percentile(samples_ms, 0.95), 3),
             "min_ms": round(min(samples_ms), 3),
             "max_ms": round(max(samples_ms), 3),
             "result_verified": True,
-            "term_index_used": index_used,
+            "production_query_term_index_used": index_used,
             "query_plan": query_plan,
         }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--sizes",
-        nargs="+",
-        type=int,
-        default=[100, 1000, 10000],
-        help="memory dataset sizes to benchmark",
-    )
+    parser.add_argument("--sizes", nargs="+", type=int, default=[100, 1000, 10000])
     parser.add_argument("--iterations", type=int, default=30)
     args = parser.parse_args()
-
     if args.iterations < 1 or any(size < 1 for size in args.sizes):
         parser.error("sizes and iterations must be positive integers")
 
     report = {
         "benchmark": "crows_memory_search",
-        "query": "CROWS_BENCHMARK_NEEDLE",
         "results": [
-            benchmark_size(size, args.iterations) for size in args.sizes
+            benchmark_workload(size, args.iterations, name, query, workload)
+            for size in args.sizes
+            for name, (query, workload) in WORKLOADS.items()
         ],
     }
     print(json.dumps(report, indent=2))
