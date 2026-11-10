@@ -419,12 +419,12 @@ def test_update_memory_replaces_search_terms_and_preserves_unchanged_fields(tmp_
     store = TaskStore(tmp_path / "update-memory.sqlite3")
     saved = store.add_memory(
         "project", "Old RETIREDALPHA7319", source="explicit_chat_request",
-        tags=["legacy-tag"],
+        tags=["LEGACYTAGALPHA"],
     )
 
     updated = store.update_memory(
         saved["id"], category="preference",
-        content="New FRESHBETA4821", tags=["current-tag"],
+        content="New FRESHBETA4821", tags=["CURRENTTAGBETA"],
     )
 
     assert updated["category"] == "preference"
@@ -432,9 +432,9 @@ def test_update_memory_replaces_search_terms_and_preserves_unchanged_fields(tmp_
     assert updated["source"] == "explicit_chat_request"
     assert updated["tags"] == ["current-tag"]
     assert store.search_memories("RETIREDALPHA7319") == []
-    assert store.search_memories("legacy-tag") == []
+    assert store.search_memories("LEGACYTAGALPHA") == []
     assert store.search_memories("FRESHBETA4821")[0]["id"] == saved["id"]
-    assert store.search_memories("current-tag")[0]["id"] == saved["id"]
+    assert store.search_memories("CURRENTTAGBETA")[0]["id"] == saved["id"]
 
 
 def test_update_memory_can_change_one_field_and_returns_none_for_missing_id(tmp_path):
