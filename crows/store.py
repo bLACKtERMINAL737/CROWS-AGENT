@@ -732,24 +732,32 @@ class TaskStore:
             if category:
                 if limit is None:
                     rows = con.execute(
-                        "SELECT id FROM memories WHERE category=? ORDER BY updated_at DESC, id DESC",
+                        "SELECT * FROM memories WHERE category=? ORDER BY updated_at DESC, id DESC",
                         (category,),
                     ).fetchall()
                 else:
                     rows = con.execute(
-                        "SELECT id FROM memories WHERE category=? ORDER BY updated_at DESC, id DESC LIMIT ?",
+                        "SELECT * FROM memories WHERE category=? ORDER BY updated_at DESC, id DESC LIMIT ?",
                         (category, limit),
                     ).fetchall()
             elif limit is None:
                 rows = con.execute(
-                    "SELECT id FROM memories ORDER BY updated_at DESC, id DESC"
+                    "SELECT * FROM memories ORDER BY updated_at DESC, id DESC"
                 ).fetchall()
             else:
                 rows = con.execute(
-                    "SELECT id FROM memories ORDER BY updated_at DESC, id DESC LIMIT ?",
+                    "SELECT * FROM memories ORDER BY updated_at DESC, id DESC LIMIT ?",
                     (limit,),
                 ).fetchall()
-        return [item for row in rows if (item := self.get_memory(row["id"])) is not None]
+
+        # Decode rows from this single result set instead of opening one
+        # additional SQLite connection/query per memory (the previous N+1 path).
+        memories = []
+        for row in rows:
+            item = dict(row)
+            item["tags"] = json.loads(item.pop("tags_json"))
+            memories.append(item)
+        return memories
 
     def search_memories(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
         import re
