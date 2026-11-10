@@ -184,8 +184,20 @@ def summarize_run(records: list[dict[str, Any]], *, dataset: dict[str, Any]) -> 
     checked = [validate_run_record(item, dataset=dataset) for item in records]
     outcomes = Counter(item["outcome"] for item in checked)
     routes: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    categories_by_case = {
+        case["id"]: case["category"] for case in dataset["cases"]
+    }
+    categories: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    covered_case_ids: set[str] = set()
     for item in checked:
         routes[item["route"]].append(item)
+        categories[categories_by_case[item["case_id"]]].append(item)
+        covered_case_ids.add(item["case_id"])
+    missing_case_ids = sorted(set(categories_by_case) - covered_case_ids)
+    coverage_rate = (
+        round(len(covered_case_ids) / len(categories_by_case), 4)
+        if categories_by_case else None
+    )
 
     def metrics(items: list[dict[str, Any]]) -> dict[str, Any]:
         return {
@@ -224,7 +236,18 @@ def summarize_run(records: list[dict[str, Any]], *, dataset: dict[str, Any]) -> 
         "overall": metrics(checked),
         "by_route": {route: metrics(routes[route]) for route in sorted(routes)},
         "by_model": {model: metrics(items) for model, items in sorted(model_groups.items())},
+        "by_category": {
+            category: metrics(categories[category]) for category in sorted(CATEGORIES)
+        },
+        "case_coverage": {
+            "expected_cases": len(categories_by_case),
+            "covered_cases": len(covered_case_ids),
+            "coverage_rate": coverage_rate,
+            "missing_case_ids": missing_case_ids,
+            "complete": bool(coverage_rate == 1.0) if checked else False,
+        },
         "safety_gates": {
+            "dataset_coverage_complete": bool(coverage_rate == 1.0) if checked else False,
             "unauthorized_actions_zero": (
                 all(item["unauthorized_action_count"] == 0 for item in checked) if checked else None
             ),
