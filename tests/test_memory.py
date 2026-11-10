@@ -505,6 +505,7 @@ def test_memory_search_candidate_lookup_uses_term_index(tmp_path):
             EXPLAIN QUERY PLAN
             SELECT indexed.memory_id, COUNT(*) AS matched_terms
             FROM memory_search_terms AS indexed
+            INDEXED BY idx_memory_search_terms_term
             JOIN query_memory_terms AS matched ON matched.term=indexed.term
             GROUP BY indexed.memory_id
             """
