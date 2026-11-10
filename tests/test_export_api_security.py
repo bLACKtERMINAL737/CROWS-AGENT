@@ -46,7 +46,7 @@ def test_authenticated_exports_return_persisted_data(monkeypatch, tmp_path):
     conversation_response = client.get("/sessions/export", headers=headers)
 
     assert memory_response.status_code == 200
-    assert memory_response.json()["format"] == "aether-memory-export"
+    assert memory_response.json()["format"] == "crows-memory-export"
     assert memory_response.json()["version"] == 1
     assert any(item["content"] == "private memory marker"
                for item in memory_response.json()["memories"])

@@ -18,7 +18,7 @@ def test_memory_export_returns_versioned_portable_document(monkeypatch):
     result = app_module.export_memories()
 
     assert result == {
-        "format": "aether-memory-export",
+        "format": "crows-memory-export",
         "version": 1,
         "memories": memories,
     }
