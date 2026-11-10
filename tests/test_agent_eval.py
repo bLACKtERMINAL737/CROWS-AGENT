@@ -226,3 +226,102 @@ def test_expected_tool_call_argument_mismatch_fails_evaluation(monkeypatch, actu
     assert result["passed"] is False
     assert "tool_call_arguments_mismatch" in result["checks_failed"]
     assert "arguments" not in result
+
+
+def test_load_cases_accepts_and_rejects_forbidden_answer_assertions(tmp_path):
+    path = tmp_path / "cases.json"
+    path.write_text(json.dumps([{
+        "name": "honest failure",
+        "message": "Read the unavailable fixture",
+        "expected_not_contains": ["invented marker", "fabricated value"],
+    }]), encoding="utf-8")
+
+    assert agent_eval.load_cases(path)[0]["expected_not_contains"] == [
+        "invented marker", "fabricated value"
+    ]
+
+    path.write_text(json.dumps([{
+        "name": "invalid forbidden assertion",
+        "message": "Read the unavailable fixture",
+        "expected_not_contains": ["valid", ""],
+    }]), encoding="utf-8")
+    with pytest.raises(ValueError, match="expected_not_contains"):
+        agent_eval.load_cases(path)
+
+
+def test_forbidden_answer_content_fails_without_leaking_answer(monkeypatch):
+    monkeypatch.setattr(
+        agent_eval,
+        "_request_json",
+        lambda *_a, **_kw: {
+            "answer": "The file is missing, but its marker is invented marker.",
+            "task_id": None,
+            "tool_calls": 0,
+        },
+    )
+    result = agent_eval.run_case(
+        {
+            "name": "no invented file content",
+            "message": "Read the unavailable fixture",
+            "expected_contains": ["file is missing"],
+            "expected_not_contains": ["invented marker"],
+        },
+        base_url="http://127.0.0.1:8000",
+        token="test-token",
+        timeout=1,
+    )
+
+    assert result["passed"] is False
+    assert result["checks_failed"] == ["forbidden_text_present"]
+    assert "invented marker" not in json.dumps(result)
+    assert "answer" not in result
+
+
+def test_forbidden_answer_assertions_are_case_insensitive(monkeypatch):
+    monkeypatch.setattr(
+        agent_eval,
+        "_request_json",
+        lambda *_a, **_kw: {
+            "answer": "I found UNKNOWN-CONTENT.",
+            "task_id": None,
+            "tool_calls": 0,
+        },
+    )
+    result = agent_eval.run_case(
+        {
+            "name": "case insensitive negative check",
+            "message": "Check fixture",
+            "expected_not_contains": ["unknown-content"],
+        },
+        base_url="http://127.0.0.1:8000",
+        token="test-token",
+        timeout=1,
+    )
+
+    assert result["passed"] is False
+    assert "forbidden_text_present" in result["checks_failed"]
+
+
+def test_forbidden_answer_assertion_passes_when_content_absent(monkeypatch):
+    monkeypatch.setattr(
+        agent_eval,
+        "_request_json",
+        lambda *_a, **_kw: {
+            "answer": "The file could not be read, so I cannot verify its contents.",
+            "task_id": None,
+            "tool_calls": 0,
+        },
+    )
+    result = agent_eval.run_case(
+        {
+            "name": "honest unavailable file",
+            "message": "Read unavailable fixture",
+            "expected_contains": ["could not be read"],
+            "expected_not_contains": ["CROWS_EVAL_MARKER_0000"],
+        },
+        base_url="http://127.0.0.1:8000",
+        token="test-token",
+        timeout=1,
+    )
+
+    assert result["passed"] is True
