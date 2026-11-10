@@ -14,6 +14,12 @@ from crows.evaluation_suite import (
 DATASET = {
     "schema_version": 1,
     "dataset_version": "test-1",
+    "execution_policy": {
+        "live_provider_required": True,
+        "require_explicit_approval_for_writes": True,
+        "prohibit_external_side_effects": True,
+        "record_route_model_latency_and_cost_when_available": True,
+    },
     "cases": [
         {
             "id": "case-a",
@@ -190,3 +196,32 @@ def test_tool_trace_requires_typed_arguments_and_result():
             record(tool_calls=[{"name": "workspace.read_file", "arguments": [], "succeeded": True}]),
             dataset=DATASET,
         )
+
+
+@pytest.mark.parametrize("policy_change", [
+    {},
+    {"live_provider_required": False},
+    {"require_explicit_approval_for_writes": False},
+    {"prohibit_external_side_effects": False},
+    {"record_route_model_latency_and_cost_when_available": False},
+])
+def test_dataset_requires_all_execution_safety_policy_flags(policy_change):
+    value = copy.deepcopy(DATASET)
+    value["execution_policy"].update(policy_change)
+    if not policy_change:
+        value.pop("execution_policy")
+    with pytest.raises(EvaluationError, match="execution_policy"):
+        validate_dataset(value)
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("automated_checks", ["valid", ""]),
+    ("automated_checks", [None]),
+    ("human_review", ["unrecognized_score"]),
+    ("human_review", [None]),
+])
+def test_dataset_rejects_malformed_rubric_fields(field, value):
+    dataset = copy.deepcopy(DATASET)
+    dataset["cases"][0]["rubric"][field] = value
+    with pytest.raises(EvaluationError, match="rubric"):
+        validate_dataset(dataset)
