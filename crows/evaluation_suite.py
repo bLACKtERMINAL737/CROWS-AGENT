@@ -60,6 +60,19 @@ def validate_dataset(dataset: Any) -> dict[str, Any]:
     version = dataset.get("dataset_version")
     if not isinstance(version, str) or not version.strip():
         raise EvaluationError("dataset_version must be a non-empty string")
+    policy = dataset.get("execution_policy")
+    required_policy_flags = (
+        "live_provider_required",
+        "require_explicit_approval_for_writes",
+        "prohibit_external_side_effects",
+        "record_route_model_latency_and_cost_when_available",
+    )
+    if not isinstance(policy, dict):
+        raise EvaluationError("execution_policy must be an object")
+    for flag in required_policy_flags:
+        if policy.get(flag) is not True:
+            raise EvaluationError(f"execution_policy.{flag} must be true")
+
     cases = dataset.get("cases")
     if not isinstance(cases, list) or not cases:
         raise EvaluationError("cases must be a non-empty array")
@@ -84,10 +97,19 @@ def validate_dataset(dataset: Any) -> dict[str, Any]:
         ):
             raise EvaluationError(f"{prefix}.expected must contain non-empty strings")
         rubric = case.get("rubric")
-        if not isinstance(rubric, dict) or not isinstance(rubric.get("automated_checks"), list):
-            raise EvaluationError(f"{prefix}.rubric.automated_checks must be an array")
-        if not isinstance(rubric.get("human_review"), list):
-            raise EvaluationError(f"{prefix}.rubric.human_review must be an array")
+        if not isinstance(rubric, dict):
+            raise EvaluationError(f"{prefix}.rubric must be an object")
+        automated_checks = rubric.get("automated_checks")
+        human_review = rubric.get("human_review")
+        if not isinstance(automated_checks, list) or any(
+            not isinstance(item, str) or not item.strip() for item in automated_checks
+        ):
+            raise EvaluationError(f"{prefix}.rubric.automated_checks must contain non-empty strings")
+        if not isinstance(human_review, list) or any(
+            not isinstance(item, str) or item not in (*SCORE_FIELDS, *BOOLEAN_FIELDS)
+            for item in human_review
+        ):
+            raise EvaluationError(f"{prefix}.rubric.human_review contains an unsupported review field")
     return dataset
 
 
