@@ -504,12 +504,16 @@ def test_memory_search_candidate_lookup_uses_term_index(tmp_path):
             """
             EXPLAIN QUERY PLAN
             SELECT indexed.memory_id, COUNT(*) AS matched_terms
-            FROM memory_search_terms AS indexed
-            INDEXED BY idx_memory_search_terms_term
-            JOIN query_memory_terms AS matched ON matched.term=indexed.term
+            FROM query_memory_terms AS matched
+            CROSS JOIN memory_search_terms AS indexed
+                INDEXED BY idx_memory_search_terms_term
+            WHERE indexed.term=matched.term
             GROUP BY indexed.memory_id
             """
         ).fetchall()
 
     details = [row["detail"] for row in plan]
-    assert any("idx_memory_search_terms_term" in detail for detail in details), details
+    assert any(
+        "SEARCH indexed USING COVERING INDEX idx_memory_search_terms_term" in detail
+        for detail in details
+    ), details
