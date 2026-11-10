@@ -485,3 +485,35 @@ def test_memory_update_api_rejects_empty_patch_and_updates_saved_record(tmp_path
             app_module.MemoryUpdateRequest(content="No record"),
         )
     assert missing_error.value.status_code == 404
+
+
+
+def test_memory_search_candidate_lookup_uses_term_index(tmp_path):
+    store = TaskStore(tmp_path / "memory-search-query-plan.sqlite3")
+    store.add_memory("project", "CROWS_QUERY_PLAN_MARKER_7319")
+
+    with store.connect() as con:
+        con.execute(
+            "CREATE TEMP TABLE query_memory_terms(term TEXT PRIMARY KEY) WITHOUT ROWID"
+        )
+        con.execute(
+            "INSERT INTO query_memory_terms(term) VALUES(?)",
+            ("crows_query_plan_marker_7319",),
+        )
+        plan = con.execute(
+            """
+            EXPLAIN QUERY PLAN
+            SELECT indexed.memory_id, COUNT(*) AS matched_terms
+            FROM query_memory_terms AS matched
+            CROSS JOIN memory_search_terms AS indexed
+                INDEXED BY idx_memory_search_terms_term
+            WHERE indexed.term=matched.term
+            GROUP BY indexed.memory_id
+            """
+        ).fetchall()
+
+    details = [row["detail"] for row in plan]
+    assert any(
+        "SEARCH indexed USING COVERING INDEX idx_memory_search_terms_term" in detail
+        for detail in details
+    ), details
