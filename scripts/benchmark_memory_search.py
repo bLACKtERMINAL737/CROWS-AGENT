@@ -67,6 +67,53 @@ def benchmark_size(memory_count: int, iterations: int) -> dict[str, object]:
         expected_id = seed_store(store, memory_count)
 
         query = "CROWS_BENCHMARK_NEEDLE"
+        query_term = "crows_benchmark_needle"
+        with store.connect() as con:
+            con.execute(
+                "CREATE TEMP TABLE query_memory_terms(term TEXT PRIMARY KEY) WITHOUT ROWID"
+            )
+            con.execute(
+                "INSERT INTO query_memory_terms(term) VALUES(?)", (query_term,)
+            )
+            plan_rows = con.execute(
+                """
+                EXPLAIN QUERY PLAN
+                WITH candidate_scores AS (
+                    SELECT indexed.memory_id, COUNT(*) AS matched_terms
+                    FROM query_memory_terms AS matched
+                    CROSS JOIN memory_search_terms AS indexed
+                    WHERE indexed.term=matched.term
+                    GROUP BY indexed.memory_id
+                ),
+                candidate_ids AS (
+                    SELECT memory_id FROM candidate_scores
+                    UNION
+                    SELECT id AS memory_id FROM memories
+                    WHERE 0 AND source='explicit_chat_request'
+                )
+                SELECT m.*, (
+                    COALESCE(candidate_scores.matched_terms, 0)
+                    + CASE WHEN 0 AND m.source='explicit_chat_request' THEN 3 ELSE 0 END
+                ) AS search_score
+                FROM candidate_ids
+                JOIN memories AS m ON m.id=candidate_ids.memory_id
+                LEFT JOIN candidate_scores ON candidate_scores.memory_id=m.id
+                ORDER BY search_score DESC, m.updated_at DESC, m.id DESC
+                LIMIT 5
+                """
+            ).fetchall()
+        query_plan = [row["detail"] for row in plan_rows]
+        index_used = any(
+            "SEARCH indexed USING COVERING INDEX idx_memory_search_terms_term"
+            in detail
+            for detail in query_plan
+        )
+        if not index_used:
+            raise RuntimeError(
+                "SQLite did not select the expected memory term index: "
+                + "; ".join(query_plan)
+            )
+
         for _ in range(5):
             results = store.search_memories(query, limit=5)
             if not results or results[0]["id"] != expected_id:
@@ -93,6 +140,8 @@ def benchmark_size(memory_count: int, iterations: int) -> dict[str, object]:
             "min_ms": round(min(samples_ms), 3),
             "max_ms": round(max(samples_ms), 3),
             "result_verified": True,
+            "term_index_used": index_used,
+            "query_plan": query_plan,
         }
 
 
