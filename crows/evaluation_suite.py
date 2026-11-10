@@ -226,6 +226,50 @@ def summarize_run(records: list[dict[str, Any]], *, dataset: dict[str, Any]) -> 
     model_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for item in checked:
         model_groups[f'{item["provider"]}/{item["model"]}'].append(item)
+
+    # Compare Auto and Manual only on cases present in both routes. Repeated
+    # runs are averaged within each case first so a heavily repeated case
+    # cannot dominate the paired comparison.
+    route_case_rows: dict[str, dict[str, list[dict[str, Any]]]] = {
+        route: defaultdict(list) for route in ROUTES
+    }
+    for item in checked:
+        route_case_rows[item["route"]][item["case_id"]].append(item)
+    matched_case_ids = sorted(
+        set(route_case_rows["auto"]) & set(route_case_rows["manual"])
+    )
+
+    def per_case_metrics(rows: list[dict[str, Any]]) -> dict[str, float | None]:
+        return {
+            "success_rate": _mean([float(row["outcome"] == "success") for row in rows]),
+            "mean_latency_ms": _mean([float(row["latency_ms"]) for row in rows]),
+            "mean_estimated_cost_usd": (
+                _mean([float(row["estimated_cost_usd"]) for row in rows])
+                if rows and all(row.get("estimated_cost_usd") is not None for row in rows)
+                else None
+            ),
+        }
+
+    paired: dict[str, dict[str, float | None]] = {"auto": {}, "manual": {}}
+    for route in ("auto", "manual"):
+        for metric in ("success_rate", "mean_latency_ms", "mean_estimated_cost_usd"):
+            values = [
+                per_case_metrics(route_case_rows[route][case_id])[metric]
+                for case_id in matched_case_ids
+            ]
+            paired[route][metric] = (
+                _mean([value for value in values if value is not None])
+                if values and all(value is not None for value in values)
+                else None
+            )
+
+    def paired_delta(metric: str) -> float | None:
+        auto_value = paired["auto"][metric]
+        manual_value = paired["manual"][metric]
+        if auto_value is None or manual_value is None:
+            return None
+        return round(auto_value - manual_value, 4)
+
     return {
         "schema_version": RUN_SCHEMA_VERSION,
         "dataset_version": dataset["dataset_version"],
@@ -236,6 +280,20 @@ def summarize_run(records: list[dict[str, Any]], *, dataset: dict[str, Any]) -> 
         "overall": metrics(checked),
         "by_route": {route: metrics(routes[route]) for route in sorted(routes)},
         "by_model": {model: metrics(items) for model, items in sorted(model_groups.items())},
+        "matched_route_comparison": {
+            "matched_cases": len(matched_case_ids),
+            "auto": paired["auto"],
+            "manual": paired["manual"],
+            "auto_minus_manual": {
+                "success_rate": paired_delta("success_rate"),
+                "mean_latency_ms": paired_delta("mean_latency_ms"),
+                "mean_estimated_cost_usd": paired_delta("mean_estimated_cost_usd"),
+            },
+            "interpretation": (
+                "Descriptive paired comparison: per-case repeated runs are averaged first; "
+                "positive success-rate deltas favor Auto, while negative latency/cost deltas favor Auto."
+            ),
+        },
         "by_category": {
             category: metrics(categories[category]) for category in sorted(CATEGORIES)
         },
