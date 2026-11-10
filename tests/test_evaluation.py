@@ -20,6 +20,8 @@ def test_evaluation_passes_only_when_workflow_tasks_and_qa_pass():
     assert report["outcome"] == "passed"
     assert report["checks"] == {
         "plan_consistent": True,
+        "dependency_graph_valid": True,
+        "dependency_outcomes_consistent": True,
         "all_tasks_succeeded": True,
         "qa_passed": True,
         "workflow_succeeded": True,
@@ -58,3 +60,79 @@ def test_evaluation_handles_malformed_checkpoint_data():
     assert report["outcome"] == "needs_attention"
     assert report["recorded_tasks"] == 0
     assert report["qa_verdict"] == "NOT_PASSED"
+
+
+def test_evaluation_rejects_a_cyclic_dependency_graph():
+    value = workflow()
+    value["plan"] = [
+        {"title": "first", "depends_on": [1]},
+        {"title": "second", "depends_on": [0]},
+    ]
+    value["results"]["tasks"] = [
+        {"plan_index": 0, "depends_on": [1], "status": "succeeded"},
+        {"plan_index": 1, "depends_on": [0], "status": "succeeded"},
+    ]
+
+    report = evaluate_workflow(value)
+
+    assert report["checks"]["dependency_graph_valid"] is False
+    assert report["checks"]["all_tasks_succeeded"] is False
+    assert report["outcome"] == "needs_attention"
+
+
+def test_evaluation_rejects_a_dependent_task_that_ran_after_failure():
+    value = workflow()
+    value["plan"] = [
+        {"title": "source", "depends_on": []},
+        {"title": "dependent", "depends_on": [0]},
+    ]
+    value["results"]["tasks"] = [
+        {"plan_index": 0, "depends_on": [], "status": "failed"},
+        {"plan_index": 1, "depends_on": [0], "status": "succeeded"},
+    ]
+    value["results"]["qa_review"] = {
+        "status": "succeeded",
+        "result": '{"verdict":"PASS"}',
+    }
+
+    report = evaluate_workflow(value)
+
+    assert report["checks"]["dependency_graph_valid"] is True
+    assert report["checks"]["dependency_outcomes_consistent"] is False
+    assert report["checks"]["all_tasks_succeeded"] is False
+    assert report["outcome"] == "needs_attention"
+
+
+def test_evaluation_accepts_a_dependent_task_blocked_by_failed_prerequisite():
+    value = workflow(status="partial", task_status="failed", verdict="NEEDS_ATTENTION")
+    value["plan"] = [
+        {"title": "source", "depends_on": []},
+        {"title": "dependent", "depends_on": [0]},
+    ]
+    value["results"]["tasks"] = [
+        {"plan_index": 0, "depends_on": [], "status": "failed"},
+        {"plan_index": 1, "depends_on": [0], "status": "blocked"},
+    ]
+
+    report = evaluate_workflow(value)
+
+    assert report["checks"]["dependency_graph_valid"] is True
+    assert report["checks"]["dependency_outcomes_consistent"] is True
+    assert report["outcome"] == "needs_attention"
+
+
+def test_evaluation_rejects_checkpoint_plan_index_and_dependency_mismatch():
+    value = workflow()
+    value["plan"] = [
+        {"title": "first", "depends_on": []},
+        {"title": "second", "depends_on": [0]},
+    ]
+    value["results"]["tasks"] = [
+        {"plan_index": 0, "depends_on": [], "status": "succeeded"},
+        {"plan_index": 0, "depends_on": [0], "status": "succeeded"},
+    ]
+
+    report = evaluate_workflow(value)
+
+    assert report["checks"]["dependency_graph_valid"] is False
+    assert report["checks"]["all_tasks_succeeded"] is False
