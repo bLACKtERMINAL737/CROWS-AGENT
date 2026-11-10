@@ -361,3 +361,23 @@ def test_memory_search_finds_matching_record_beyond_latest_500(tmp_path):
     assert results
     assert results[0]["id"] == old_memory["id"]
     assert results[0]["content"] == "CROWS_ARCHIVE_MARKER_7319"
+
+def test_list_memories_bulk_loads_records_without_per_record_queries(tmp_path, monkeypatch):
+    store = TaskStore(tmp_path / "bulk-memory.sqlite3")
+    older = store.add_memory("project", "Older project fact", tags=["archive"])
+    newer = store.add_memory("preference", "Newer preference", tags=["style"])
+
+    def unexpected_get_memory(_memory_id):
+        raise AssertionError("list_memories must not issue one query per record")
+
+    monkeypatch.setattr(store, "get_memory", unexpected_get_memory)
+
+    all_memories = store.list_memories(limit=None)
+    assert [item["id"] for item in all_memories] == [newer["id"], older["id"]]
+    assert all_memories[1]["tags"] == ["archive"]
+
+    project_memories = store.list_memories(limit=None, category="project")
+    assert [item["id"] for item in project_memories] == [older["id"]]
+
+    limited = store.list_memories(limit=1)
+    assert [item["id"] for item in limited] == [newer["id"]]
