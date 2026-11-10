@@ -211,6 +211,7 @@ Session endpoints:
 Memory endpoints:
 
 - `POST /memory` — save a memory with a category, content, optional tags, and source
+- `PATCH /memory/{memory_id}` — update a saved memory's category, content, and/or tags; omitted fields remain unchanged
 - `GET /memory?limit=100&category=preference` — list memories
 - `POST /memory/search` — search saved records by keywords
 - `DELETE /memory/{memory_id}` — delete a saved record
