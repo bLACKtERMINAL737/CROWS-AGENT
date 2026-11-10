@@ -23,7 +23,7 @@ python scripts/agent_eval.py \
   --output agent-eval-report.json
 ```
 
-The report contains case names, pass/fail checks, latency, task status, successful tool-call count, and tool names observed in the journal. It deliberately omits prompts, model answers, headers, credentials, and endpoint metadata. Keep the report out of version control if local project identifiers or timing data should remain private.
+The report contains case names, pass/fail checks, latency, task status, successful tool-call count, and tool names observed in the journal. Cases may also define `expected_tool_calls` as an ordered list of exact `{name, arguments}` objects; the runner compares these against the persisted tool journal and fails on missing, extra, malformed, or mismatched calls. Argument values are used only for local comparison and are never copied into the report. It deliberately omits prompts, model answers, headers, credentials, and endpoint metadata. Keep the report out of version control if local project identifiers or timing data should remain private.
 
 ## Interpreting results
 
