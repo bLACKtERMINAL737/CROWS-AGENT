@@ -412,3 +412,76 @@ def test_memory_search_index_preserves_unicode_whole_word_matching(tmp_path):
     saved = store.add_memory("note", "İstanbul CROWS-indexed")
     assert store.search_memories("İSTANBUL")[0]["id"] == saved["id"]
     assert store.search_memories("art") == []
+
+
+
+def test_update_memory_replaces_search_terms_and_preserves_unchanged_fields(tmp_path):
+    store = TaskStore(tmp_path / "update-memory.sqlite3")
+    saved = store.add_memory(
+        "project", "Old CROWS_EDIT_OLD_7319", source="explicit_chat_request",
+        tags=["legacy-tag"],
+    )
+
+    updated = store.update_memory(
+        saved["id"], category="preference",
+        content="New CROWS_EDIT_NEW_4821", tags=["current-tag"],
+    )
+
+    assert updated["category"] == "preference"
+    assert updated["content"] == "New CROWS_EDIT_NEW_4821"
+    assert updated["source"] == "explicit_chat_request"
+    assert updated["tags"] == ["current-tag"]
+    assert store.search_memories("CROWS_EDIT_OLD_7319") == []
+    assert store.search_memories("legacy-tag") == []
+    assert store.search_memories("CROWS_EDIT_NEW_4821")[0]["id"] == saved["id"]
+    assert store.search_memories("current-tag")[0]["id"] == saved["id"]
+
+
+def test_update_memory_can_change_one_field_and_returns_none_for_missing_id(tmp_path):
+    store = TaskStore(tmp_path / "partial-update-memory.sqlite3")
+    saved = store.add_memory("note", "Keep this content", tags=["keep-tag"])
+
+    updated = store.update_memory(saved["id"], category="preference")
+
+    assert updated["category"] == "preference"
+    assert updated["content"] == "Keep this content"
+    assert updated["tags"] == ["keep-tag"]
+    assert store.update_memory("missing-memory-id", content="Not found") is None
+
+
+def test_update_memory_rejects_blank_values_without_mutating_record(tmp_path):
+    store = TaskStore(tmp_path / "invalid-update-memory.sqlite3")
+    saved = store.add_memory("note", "Original searchable marker")
+
+    with pytest.raises(ValueError, match="category must not be blank"):
+        store.update_memory(saved["id"], category="   ")
+
+    unchanged = store.get_memory(saved["id"])
+    assert unchanged["category"] == "note"
+    assert unchanged["content"] == "Original searchable marker"
+    assert store.search_memories("Original searchable marker")[0]["id"] == saved["id"]
+
+
+def test_memory_update_api_rejects_empty_patch_and_updates_saved_record(tmp_path, monkeypatch):
+    store = TaskStore(tmp_path / "memory-update-api.sqlite3")
+    saved = store.add_memory("note", "Before update marker")
+    monkeypatch.setattr(app_module, "store", store)
+
+    with pytest.raises(app_module.HTTPException) as empty_error:
+        app_module.update_memory(saved["id"], app_module.MemoryUpdateRequest())
+    assert empty_error.value.status_code == 400
+
+    updated = app_module.update_memory(
+        saved["id"],
+        app_module.MemoryUpdateRequest(content="After update marker", tags=["edited"]),
+    )
+    assert updated["content"] == "After update marker"
+    assert store.search_memories("Before update marker") == []
+    assert store.search_memories("After update marker")[0]["id"] == saved["id"]
+
+    with pytest.raises(app_module.HTTPException) as missing_error:
+        app_module.update_memory(
+            "missing-memory-id",
+            app_module.MemoryUpdateRequest(content="No record"),
+        )
+    assert missing_error.value.status_code == 404
