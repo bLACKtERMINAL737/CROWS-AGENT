@@ -769,6 +769,54 @@ class TaskStore:
             )
         return self.get_memory(memory_id)  # type: ignore[return-value]
 
+    def update_memory(
+        self,
+        memory_id: str,
+        *,
+        category: str | None = None,
+        content: str | None = None,
+        tags: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        """Update editable memory fields and their search terms atomically."""
+        with self.connect() as con:
+            row = con.execute(
+                "SELECT category, content, tags_json FROM memories WHERE id=?",
+                (memory_id,),
+            ).fetchone()
+            if row is None:
+                return None
+
+            clean_category = (category if category is not None else row["category"]).strip()
+            clean_content = (content if content is not None else row["content"]).strip()
+            clean_tags = tags if tags is not None else json.loads(row["tags_json"])
+            if not clean_category:
+                raise ValueError("category must not be blank")
+            if not clean_content:
+                raise ValueError("content must not be blank")
+            if not isinstance(clean_tags, list) or any(
+                not isinstance(tag, str) or not tag.strip() for tag in clean_tags
+            ):
+                raise ValueError("tags must be a list of non-blank strings")
+            clean_tags = [tag.strip() for tag in clean_tags]
+
+            con.execute("DELETE FROM memory_search_terms WHERE memory_id=?", (memory_id,))
+            tokens = _memory_search_tokens(clean_category, clean_content, *clean_tags)
+            con.executemany(
+                "INSERT INTO memory_search_terms(memory_id, term) VALUES(?, ?)",
+                [(memory_id, token) for token in tokens],
+            )
+            con.execute(
+                "UPDATE memories SET category=?, content=?, tags_json=?, updated_at=? WHERE id=?",
+                (
+                    clean_category,
+                    clean_content,
+                    json.dumps(clean_tags, ensure_ascii=False),
+                    utc_now(),
+                    memory_id,
+                ),
+            )
+        return self.get_memory(memory_id)
+
     def get_memory(self, memory_id: str) -> dict[str, Any] | None:
         with self.connect() as con:
             row = con.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()

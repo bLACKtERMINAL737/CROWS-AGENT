@@ -365,6 +365,12 @@ class MemoryCreateRequest(BaseModel):
     tags: list[str] = Field(default_factory=list, max_length=20)
 
 
+class MemoryUpdateRequest(BaseModel):
+    category: str | None = Field(default=None, min_length=1, max_length=80)
+    content: str | None = Field(default=None, min_length=1, max_length=4_000)
+    tags: list[str] | None = Field(default=None, max_length=20)
+
+
 class MemorySearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=300)
     limit: int = Field(default=20, ge=1, le=100)
@@ -3362,6 +3368,24 @@ def export_memories():
 @app.post("/memory/search")
 def search_memory(request: MemorySearchRequest):
     return {"memories": store.search_memories(request.query, limit=request.limit)}
+
+
+@app.patch("/memory/{memory_id}")
+def update_memory(memory_id: str, request: MemoryUpdateRequest):
+    changes = request.model_dump(exclude_unset=True)
+    if not changes:
+        raise HTTPException(status_code=400, detail="At least one memory field must be supplied")
+    if "category" in changes and not changes["category"].strip():
+        raise HTTPException(status_code=422, detail="category must not be blank")
+    if "content" in changes and not changes["content"].strip():
+        raise HTTPException(status_code=422, detail="content must not be blank")
+    try:
+        updated = store.update_memory(memory_id, **changes)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return updated
 
 
 @app.delete("/memory/{memory_id}")
