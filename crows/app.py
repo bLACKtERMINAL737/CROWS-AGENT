@@ -3359,7 +3359,7 @@ def list_memory(limit: int = 100, category: str | None = None):
 def export_memories():
     """Export saved local memories as a portable, versioned JSON document."""
     return {
-        "format": "aether-memory-export",
+        "format": "crows-memory-export",
         "version": 1,
         "memories": store.list_memories(limit=10000),
     }
