@@ -108,3 +108,121 @@ def test_unexpected_task_status_fails_evaluation(monkeypatch):
 
     assert result["passed"] is False
     assert "unexpected_task_status" in result["checks_failed"]
+
+
+def test_load_cases_validates_expected_tool_call_arguments(tmp_path):
+    path = tmp_path / "cases.json"
+    path.write_text(json.dumps([{
+        "name": "read exact file",
+        "message": "Read notes.txt",
+        "expected_tool_calls": [{
+            "name": "workspace.read_file",
+            "arguments": {"path": "notes.txt"},
+        }],
+    }]), encoding="utf-8")
+
+    cases = agent_eval.load_cases(path)
+
+    assert cases[0]["expected_tool_calls"] == [{
+        "name": "workspace.read_file",
+        "arguments": {"path": "notes.txt"},
+    }]
+
+
+@pytest.mark.parametrize("expected_calls", [
+    "not-a-list",
+    [None],
+    [{"name": "", "arguments": {}}],
+    [{"name": "workspace.read_file", "arguments": []}],
+])
+def test_load_cases_rejects_malformed_expected_tool_calls(tmp_path, expected_calls):
+    path = tmp_path / "cases.json"
+    path.write_text(json.dumps([{
+        "name": "invalid tool expectation",
+        "message": "Read notes.txt",
+        "expected_tool_calls": expected_calls,
+    }]), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="expected_tool_calls"):
+        agent_eval.load_cases(path)
+
+
+def test_expected_tool_call_arguments_match_journal_exactly(monkeypatch):
+    responses = iter([
+        {
+            "answer": "Read the requested file.",
+            "task_id": "task-789",
+            "tool_calls": 1,
+        },
+        {
+            "status": "succeeded",
+            "tool_executions": [{
+                "tool_name": "workspace.read_file",
+                "input_json": '{"path": "notes.txt"}',
+                "status": "succeeded",
+            }],
+        },
+    ])
+    monkeypatch.setattr(agent_eval, "_request_json", lambda *_a, **_kw: next(responses))
+    case = {
+        "name": "exact tool arguments",
+        "message": "Read notes.txt",
+        "expected_tools": ["workspace.read_file"],
+        "min_tool_calls": 1,
+        "expected_tool_calls": [{
+            "name": "workspace.read_file",
+            "arguments": {"path": "notes.txt"},
+        }],
+    }
+
+    result = agent_eval.run_case(
+        case,
+        base_url="http://127.0.0.1:8000",
+        token="test-token",
+        timeout=1,
+    )
+
+    assert result["passed"] is True
+
+
+@pytest.mark.parametrize("actual_arguments", [
+    '{"path": "secrets.txt"}',
+    '{"path": "notes.txt", "recursive": true}',
+    "not-json",
+])
+def test_expected_tool_call_argument_mismatch_fails_evaluation(monkeypatch, actual_arguments):
+    responses = iter([
+        {
+            "answer": "Read the requested file.",
+            "task_id": "task-790",
+            "tool_calls": 1,
+        },
+        {
+            "status": "succeeded",
+            "tool_executions": [{
+                "tool_name": "workspace.read_file",
+                "input_json": actual_arguments,
+                "status": "succeeded",
+            }],
+        },
+    ])
+    monkeypatch.setattr(agent_eval, "_request_json", lambda *_a, **_kw: next(responses))
+    case = {
+        "name": "tool arguments must match",
+        "message": "Read notes.txt",
+        "expected_tool_calls": [{
+            "name": "workspace.read_file",
+            "arguments": {"path": "notes.txt"},
+        }],
+    }
+
+    result = agent_eval.run_case(
+        case,
+        base_url="http://127.0.0.1:8000",
+        token="test-token",
+        timeout=1,
+    )
+
+    assert result["passed"] is False
+    assert "tool_call_arguments_mismatch" in result["checks_failed"]
+    assert "arguments" not in result
