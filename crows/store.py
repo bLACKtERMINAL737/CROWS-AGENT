@@ -824,8 +824,8 @@ class TaskStore:
             return []
 
         recall_intent = bool(
-            re.search(r"\b(remember|recall|memorized|saved)\\b", query, re.IGNORECASE)
-            and re.search(r"\b(what|which|code|thing|information|detail)\\b", query, re.IGNORECASE)
+            re.search(r"\b(remember|recall|memorized|saved)\b", query, re.IGNORECASE)
+            and re.search(r"\b(what|which|code|thing|information|detail)\b", query, re.IGNORECASE)
         )
         with self.connect() as con:
             # A connection-local term table avoids SQLite's bound-variable limit
