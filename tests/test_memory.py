@@ -485,3 +485,17 @@ def test_memory_update_api_rejects_empty_patch_and_updates_saved_record(tmp_path
             app_module.MemoryUpdateRequest(content="No record"),
         )
     assert missing_error.value.status_code == 404
+
+def test_memory_export_uses_crows_format_and_includes_saved_metadata(tmp_path, monkeypatch):
+    store = TaskStore(tmp_path / "memory-export.sqlite3")
+    saved = store.add_memory(
+        "project", "CROWS_EXPORT_MARKER_7319", source="user",
+        tags=["portable", "backup"],
+    )
+    monkeypatch.setattr(app_module, "store", store)
+
+    exported = app_module.export_memories()
+
+    assert exported["format"] == "crows-memory-export"
+    assert exported["version"] == 1
+    assert exported["memories"] == [saved]
