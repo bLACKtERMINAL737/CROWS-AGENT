@@ -430,7 +430,7 @@ def test_update_memory_replaces_search_terms_and_preserves_unchanged_fields(tmp_
     assert updated["category"] == "preference"
     assert updated["content"] == "New FRESHBETA4821"
     assert updated["source"] == "explicit_chat_request"
-    assert updated["tags"] == ["current-tag"]
+    assert updated["tags"] == ["CURRENTTAGBETA"]
     assert store.search_memories("RETIREDALPHA7319") == []
     assert store.search_memories("LEGACYTAGALPHA") == []
     assert store.search_memories("FRESHBETA4821")[0]["id"] == saved["id"]
