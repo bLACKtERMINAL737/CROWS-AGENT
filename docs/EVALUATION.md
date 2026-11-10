@@ -47,3 +47,6 @@ The summarizer rejects mismatched dataset versions/hashes, unknown case IDs, inv
 6. Report incomplete coverage, missing cost data, and human-review coverage. Do not claim benchmark superiority from unmatched cases, a single run, or different dataset hashes.
 
 This package validates and summarizes evidence; it does not itself invoke providers or execute benchmark prompts. Live execution adapters can be added separately with explicit workspace isolation and approval boundaries.
+## Matched Auto vs Manual comparison
+
+The summary includes `matched_route_comparison`. It compares only case IDs recorded under both Auto and Manual routing. For each route and case, repeated records are averaged first; then case-level values are averaged so repeated runs do not overweight one case. It reports success rate, mean latency, and mean estimated cost, plus Auto-minus-Manual deltas. Positive success-rate deltas favor Auto; negative latency and cost deltas favor Auto. Missing routes, unmatched cases, or incomplete cost data remain `null` rather than being inferred as zero. This is descriptive evidence, not a statistical significance test; use repeated matched runs and inspect the raw JSONL records.
