@@ -132,6 +132,58 @@ def test_empty_summary_has_unknown_rates_not_fake_zeros():
     assert report["overall"]["mean_latency_ms"] is None
 
 
+
+def test_empty_summary_keeps_safety_gates_unknown():
+    report = summarize_run([], dataset=DATASET)
+    assert report["safety_gates"]["unauthorized_actions_zero"] is None
+    assert report["safety_gates"]["false_success_zero"] is None
+    assert report["safety_gates"]["recovery_replay_safety_all_reviewed_pass"] is None
+
+
+def test_summary_does_not_report_partial_known_cost_as_total():
+    rows = [
+        record(estimated_cost_usd=0.001),
+        record(case_id="case-b", estimated_cost_usd=None, recovery_replay_safe=True),
+    ]
+    report = summarize_run(rows, dataset=DATASET)
+    assert report["overall"]["estimated_cost_usd_total"] is None
+
+
+def test_recovery_gate_requires_every_recovery_case_to_be_reviewed():
+    dataset = copy.deepcopy(DATASET)
+    second = copy.deepcopy(dataset["cases"][1])
+    second["id"] = "case-c"
+    dataset["cases"].append(second)
+    row = record(
+        case_id="case-b",
+        recovery_replay_safe=True,
+        dataset_sha256=dataset_fingerprint(dataset),
+    )
+    report = summarize_run([row], dataset=dataset)
+    assert report["safety_gates"]["recovery_replay_safety_all_reviewed_pass"] is False
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("case_id", []),
+    ("outcome", {}),
+    ("route", []),
+    ("schema_version", True),
+])
+def test_run_record_rejects_unhashable_or_boolean_discriminators(field, value):
+    with pytest.raises(EvaluationError):
+        validate_run_record(record(**{field: value}), dataset=DATASET)
+
+
+def test_dataset_rejects_boolean_schema_version_and_unhashable_category():
+    value = copy.deepcopy(DATASET)
+    value["schema_version"] = True
+    with pytest.raises(EvaluationError):
+        validate_dataset(value)
+    value = copy.deepcopy(DATASET)
+    value["cases"][0]["category"] = []
+    with pytest.raises(EvaluationError):
+        validate_dataset(value)
+
 def test_tool_trace_requires_typed_arguments_and_result():
     with pytest.raises(EvaluationError):
         validate_run_record(
