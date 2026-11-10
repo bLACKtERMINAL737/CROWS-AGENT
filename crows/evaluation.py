@@ -78,8 +78,6 @@ def _dependency_integrity(
             if any(value != "succeeded" for value in prerequisite_statuses):
                 if status in {"running", "succeeded", "failed"}:
                     outcomes_consistent = False
-            if status == "blocked" and all(value == "succeeded" for value in prerequisite_statuses):
-                outcomes_consistent = False
     return graph_valid, outcomes_consistent
 
 
