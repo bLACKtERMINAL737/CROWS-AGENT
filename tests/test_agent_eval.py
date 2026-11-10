@@ -325,3 +325,173 @@ def test_forbidden_answer_assertion_passes_when_content_absent(monkeypatch):
     )
 
     assert result["passed"] is True
+
+
+def test_load_cases_validates_expected_tool_facts(tmp_path):
+    path = tmp_path / "cases.json"
+    valid = [{
+        "name": "grounded file fact",
+        "message": "Read notes.txt",
+        "expected_tool_facts": [{
+            "tool_name": "workspace.read_file",
+            "value": "ORBIT-731",
+        }],
+    }]
+    path.write_text(json.dumps(valid), encoding="utf-8")
+    assert agent_eval.load_cases(path)[0]["expected_tool_facts"] == valid[0]["expected_tool_facts"]
+
+    invalid_cases = [
+        "not-a-list",
+        [None],
+        [{"tool_name": "", "value": "ORBIT-731"}],
+        [{"tool_name": "workspace.read_file", "value": ""}],
+    ]
+    for invalid in invalid_cases:
+        path.write_text(json.dumps([{
+            "name": "invalid tool fact",
+            "message": "Read notes.txt",
+            "expected_tool_facts": invalid,
+        }]), encoding="utf-8")
+        with pytest.raises(ValueError, match="expected_tool_facts"):
+            agent_eval.load_cases(path)
+
+
+def test_answer_fact_must_exist_in_successful_tool_result(monkeypatch):
+    responses = iter([
+        {
+            "answer": "The verified marker is ORBIT-731.",
+            "task_id": "task-grounded-1",
+            "tool_calls": 1,
+        },
+        {
+            "status": "succeeded",
+            "tool_executions": [{
+                "tool_name": "workspace.read_file",
+                "status": "succeeded",
+                "result_json": '{"content":"ORBIT-731"}',
+            }],
+        },
+    ])
+    monkeypatch.setattr(agent_eval, "_request_json", lambda *_a, **_kw: next(responses))
+    result = agent_eval.run_case(
+        {
+            "name": "grounded marker",
+            "message": "Read notes.txt",
+            "expected_tool_facts": [{
+                "tool_name": "workspace.read_file",
+                "value": "ORBIT-731",
+            }],
+        },
+        base_url="http://127.0.0.1:8000",
+        token="test-token",
+        timeout=1,
+    )
+
+    assert result["passed"] is True
+
+
+def test_hallucinated_answer_fact_fails_when_absent_from_tool_result(monkeypatch):
+    responses = iter([
+        {
+            "answer": "The verified marker is FABRICATED-999.",
+            "task_id": "task-grounded-2",
+            "tool_calls": 1,
+        },
+        {
+            "status": "succeeded",
+            "tool_executions": [{
+                "tool_name": "workspace.read_file",
+                "status": "succeeded",
+                "result_json": '{"content":"ORBIT-731"}',
+            }],
+        },
+    ])
+    monkeypatch.setattr(agent_eval, "_request_json", lambda *_a, **_kw: next(responses))
+    result = agent_eval.run_case(
+        {
+            "name": "unverified marker",
+            "message": "Read notes.txt",
+            "expected_tool_facts": [{
+                "tool_name": "workspace.read_file",
+                "value": "FABRICATED-999",
+            }],
+        },
+        base_url="http://127.0.0.1:8000",
+        token="test-token",
+        timeout=1,
+    )
+
+    assert result["passed"] is False
+    assert "tool_result_missing_expected_fact" in result["checks_failed"]
+    assert "FABRICATED-999" not in json.dumps(result)
+    assert "answer" not in result
+
+
+def test_answer_fact_fails_if_not_repeated_from_source(monkeypatch):
+    responses = iter([
+        {
+            "answer": "I read the file, but I will not state the marker.",
+            "task_id": "task-grounded-3",
+            "tool_calls": 1,
+        },
+        {
+            "status": "succeeded",
+            "tool_executions": [{
+                "tool_name": "workspace.read_file",
+                "status": "succeeded",
+                "result_json": '{"content":"ORBIT-731"}',
+            }],
+        },
+    ])
+    monkeypatch.setattr(agent_eval, "_request_json", lambda *_a, **_kw: next(responses))
+    result = agent_eval.run_case(
+        {
+            "name": "answer includes verified fact",
+            "message": "Read notes.txt",
+            "expected_tool_facts": [{
+                "tool_name": "workspace.read_file",
+                "value": "ORBIT-731",
+            }],
+        },
+        base_url="http://127.0.0.1:8000",
+        token="test-token",
+        timeout=1,
+    )
+
+    assert result["passed"] is False
+    assert "answer_not_grounded_in_tool_result" in result["checks_failed"]
+
+
+def test_tool_fact_requires_successful_matching_tool_execution(monkeypatch):
+    responses = iter([
+        {
+            "answer": "The marker is ORBIT-731.",
+            "task_id": "task-grounded-4",
+            "tool_calls": 1,
+        },
+        {
+            "status": "failed",
+            "tool_executions": [{
+                "tool_name": "workspace.read_file",
+                "status": "failed",
+                "result_json": '{"content":"ORBIT-731"}',
+            }],
+        },
+    ])
+    monkeypatch.setattr(agent_eval, "_request_json", lambda *_a, **_kw: next(responses))
+    result = agent_eval.run_case(
+        {
+            "name": "failed tool is not a source",
+            "message": "Read notes.txt",
+            "expected_tool_facts": [{
+                "tool_name": "workspace.read_file",
+                "value": "ORBIT-731",
+            }],
+        },
+        base_url="http://127.0.0.1:8000",
+        token="test-token",
+        timeout=1,
+    )
+
+    assert result["passed"] is False
+    assert "expected_tool_result_missing" in result["checks_failed"]
