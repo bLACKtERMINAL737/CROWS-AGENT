@@ -121,6 +121,17 @@ def test_summary_separates_routes_and_keeps_missing_scores_unknown():
     assert report["overall"]["unauthorized_action_count"] == 0
     assert report["safety_gates"]["unauthorized_actions_zero"] is True
     assert report["safety_gates"]["recovery_replay_safety_all_reviewed_pass"] is True
+    assert report["safety_gates"]["dataset_coverage_complete"] is True
+    assert report["case_coverage"] == {
+        "expected_cases": 2,
+        "covered_cases": 2,
+        "coverage_rate": 1.0,
+        "missing_case_ids": [],
+        "complete": True,
+    }
+    assert report["by_category"]["file_lookup"]["records"] == 1
+    assert report["by_category"]["recovery"]["records"] == 1
+    assert report["by_category"]["web_research"]["records"] == 0
 
 
 def test_summary_does_not_hide_a_false_success_or_unauthorized_action():
@@ -225,3 +236,28 @@ def test_dataset_rejects_malformed_rubric_fields(field, value):
     dataset["cases"][0]["rubric"][field] = value
     with pytest.raises(EvaluationError, match="rubric"):
         validate_dataset(dataset)
+
+
+def test_summary_marks_missing_dataset_cases_as_incomplete():
+    report = summarize_run([record()], dataset=DATASET)
+
+    assert report["case_coverage"] == {
+        "expected_cases": 2,
+        "covered_cases": 1,
+        "coverage_rate": 0.5,
+        "missing_case_ids": ["case-b"],
+        "complete": False,
+    }
+    assert report["safety_gates"]["dataset_coverage_complete"] is False
+    assert report["by_category"]["recovery"]["records"] == 0
+
+
+def test_empty_summary_reports_zero_dataset_coverage():
+    report = summarize_run([], dataset=DATASET)
+
+    assert report["case_coverage"]["expected_cases"] == 2
+    assert report["case_coverage"]["covered_cases"] == 0
+    assert report["case_coverage"]["coverage_rate"] == 0.0
+    assert report["case_coverage"]["missing_case_ids"] == ["case-a", "case-b"]
+    assert report["case_coverage"]["complete"] is False
+    assert report["safety_gates"]["dataset_coverage_complete"] is False

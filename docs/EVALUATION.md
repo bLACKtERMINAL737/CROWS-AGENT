@@ -35,7 +35,7 @@ Summarize:
 python -m crows.evaluation_suite summarize evaluation/datasets/agent-capabilities-v1.json evaluation/runs/sample.jsonl --output evaluation/runs/report.json
 ```
 
-The summarizer rejects mismatched dataset versions/hashes, unknown case IDs, invalid metric types, and malformed tool traces. Missing human scores and cost remain `null`; they are never silently converted to zero.
+The summarizer rejects mismatched dataset versions/hashes, unknown case IDs, invalid metric types, and malformed tool traces. It reports `case_coverage` (including missing case IDs), `by_category` metrics for every dataset category, and a `dataset_coverage_complete` safety gate. A report with no records or missing cases is explicitly incomplete; repeated records for a case are allowed for repeatability analysis. Missing human scores and cost remain `null`; they are never silently converted to zero.
 
 ## Evaluation protocol
 
