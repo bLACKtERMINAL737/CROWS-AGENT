@@ -252,6 +252,57 @@ def test_summary_marks_missing_dataset_cases_as_incomplete():
     assert report["by_category"]["recovery"]["records"] == 0
 
 
+def test_summary_compares_routes_only_on_matched_cases_and_averages_repeats():
+    rows = [
+        record(route="auto", outcome="success", latency_ms=100, estimated_cost_usd=0.001),
+        record(route="auto", outcome="failure", latency_ms=300, estimated_cost_usd=0.003),
+        record(route="manual", outcome="success", latency_ms=200, estimated_cost_usd=0.002),
+        # This unmatched case must not affect the paired comparison.
+        record(case_id="case-b", route="manual", outcome="failure", latency_ms=900,
+               recovery_replay_safe=True, estimated_cost_usd=0.009),
+    ]
+
+    report = summarize_run(rows, dataset=DATASET)
+    comparison = report["matched_route_comparison"]
+
+    assert comparison["matched_cases"] == 1
+    assert comparison["auto"]["success_rate"] == 0.5
+    assert comparison["manual"]["success_rate"] == 1.0
+    assert comparison["auto"]["mean_latency_ms"] == 200.0
+    assert comparison["manual"]["mean_latency_ms"] == 200.0
+    assert comparison["auto"]["mean_estimated_cost_usd"] == 0.002
+    assert comparison["manual"]["mean_estimated_cost_usd"] == 0.002
+    assert comparison["auto_minus_manual"] == {
+        "success_rate": -0.5,
+        "mean_latency_ms": 0.0,
+        "mean_estimated_cost_usd": 0.0,
+    }
+
+
+def test_matched_route_comparison_is_unknown_without_both_routes():
+    report = summarize_run([record(route="auto")], dataset=DATASET)
+
+    comparison = report["matched_route_comparison"]
+    assert comparison["matched_cases"] == 0
+    assert comparison["auto"]["success_rate"] is None
+    assert comparison["manual"]["success_rate"] is None
+    assert comparison["auto_minus_manual"]["success_rate"] is None
+
+
+def test_matched_route_cost_stays_unknown_when_any_repetition_lacks_cost():
+    rows = [
+        record(route="auto", estimated_cost_usd=0.001),
+        record(route="auto", estimated_cost_usd=None),
+        record(route="manual", estimated_cost_usd=0.002),
+    ]
+    comparison = summarize_run(rows, dataset=DATASET)["matched_route_comparison"]
+
+    assert comparison["matched_cases"] == 1
+    assert comparison["auto"]["mean_estimated_cost_usd"] is None
+    assert comparison["manual"]["mean_estimated_cost_usd"] == 0.002
+    assert comparison["auto_minus_manual"]["mean_estimated_cost_usd"] is None
+
+
 def test_empty_summary_reports_zero_dataset_coverage():
     report = summarize_run([], dataset=DATASET)
 
