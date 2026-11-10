@@ -22,6 +22,67 @@ def _qa_verdict(review: Any) -> str:
     return verdict if verdict in {"PASS", "NEEDS_ATTENTION"} else "UNVERIFIED"
 
 
+def _dependency_integrity(
+    plan: list[Any], tasks: list[Any]
+) -> tuple[bool, bool]:
+    """Check the saved dependency graph and whether task outcomes respect it."""
+    dependencies: list[list[int]] = []
+    graph_valid = len(plan) == len(tasks) and all(
+        isinstance(item, dict) for item in plan
+    ) and all(isinstance(item, dict) for item in tasks)
+    if not graph_valid:
+        return False, False
+
+    task_by_index: dict[int, dict[str, Any]] = {}
+    for position, task in enumerate(tasks):
+        index = task.get("plan_index", position)
+        if type(index) is not int or index < 0 or index >= len(plan) or index in task_by_index:
+            graph_valid = False
+            continue
+        task_by_index[index] = task
+    if len(task_by_index) != len(plan):
+        graph_valid = False
+
+    for index, item in enumerate(plan):
+        deps = item.get("depends_on", [])
+        if (
+            not isinstance(deps, list)
+            or any(type(dep) is not int or dep < 0 or dep >= len(plan) or dep == index for dep in deps)
+            or len(set(deps)) != len(deps)
+        ):
+            graph_valid = False
+            dependencies.append([])
+            continue
+        dependencies.append(deps)
+        task = task_by_index.get(index)
+        if task is not None and task.get("depends_on", deps) != deps:
+            graph_valid = False
+
+    if graph_valid:
+        remaining = {index: set(deps) for index, deps in enumerate(dependencies)}
+        completed: set[int] = set()
+        while remaining:
+            ready = [index for index, deps in remaining.items() if deps <= completed]
+            if not ready:
+                graph_valid = False
+                break
+            for index in ready:
+                completed.add(index)
+                del remaining[index]
+
+    outcomes_consistent = graph_valid
+    if graph_valid:
+        for index, deps in enumerate(dependencies):
+            status = task_by_index[index].get("status")
+            prerequisite_statuses = [task_by_index[dep].get("status") for dep in deps]
+            if any(value != "succeeded" for value in prerequisite_statuses):
+                if status in {"running", "succeeded", "failed"}:
+                    outcomes_consistent = False
+            if status == "blocked" and all(value == "succeeded" for value in prerequisite_statuses):
+                outcomes_consistent = False
+    return graph_valid, outcomes_consistent
+
+
 def evaluate_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
     """Evaluate saved checkpoints without model calls or exposing task content."""
     plan = workflow.get("plan")
@@ -38,7 +99,11 @@ def evaluate_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
             counts[status] += 1
     qa_verdict = _qa_verdict(results.get("qa_review"))
     plan_consistent = len(plan) == len(valid_tasks) and len(tasks) == len(valid_tasks)
-    all_tasks_succeeded = plan_consistent and len(plan) > 0 and counts["succeeded"] == len(plan)
+    dependency_graph_valid, dependency_outcomes_consistent = _dependency_integrity(plan, tasks)
+    all_tasks_succeeded = (
+        plan_consistent and dependency_graph_valid and dependency_outcomes_consistent
+        and len(plan) > 0 and counts["succeeded"] == len(plan)
+    )
     qa_passed = qa_verdict == "PASS"
     workflow_status = workflow.get("status")
     passed = workflow_status == "succeeded" and all_tasks_succeeded and qa_passed
@@ -57,6 +122,8 @@ def evaluate_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
         "qa_verdict": qa_verdict,
         "checks": {
             "plan_consistent": plan_consistent,
+            "dependency_graph_valid": dependency_graph_valid,
+            "dependency_outcomes_consistent": dependency_outcomes_consistent,
             "all_tasks_succeeded": all_tasks_succeeded,
             "qa_passed": qa_passed,
             "workflow_succeeded": workflow_status == "succeeded",
