@@ -46,8 +46,21 @@ def load_cases(path: Path) -> list[dict[str, Any]]:
         tools = case.get("expected_tools", [])
         if not isinstance(expected, list) or any(not isinstance(item, str) for item in expected):
             raise ValueError(f"Case {name!r}: expected_contains must be a list of strings")
-        if not isinstance(tools, list) or any(not isinstance(item, str) for item in tools):
-            raise ValueError(f"Case {name!r}: expected_tools must be a list of strings")
+        if not isinstance(tools, list) or any(not isinstance(item, str) or not item.strip() for item in tools):
+            raise ValueError(f"Case {name!r}: expected_tools must be a list of non-empty strings")
+        expected_calls = case.get("expected_tool_calls", [])
+        if not isinstance(expected_calls, list):
+            raise ValueError(f"Case {name!r}: expected_tool_calls must be a list")
+        for call_index, call in enumerate(expected_calls):
+            if (
+                not isinstance(call, dict)
+                or not isinstance(call.get("name"), str)
+                or not call["name"].strip()
+                or not isinstance(call.get("arguments"), dict)
+            ):
+                raise ValueError(
+                    f"Case {name!r}: expected_tool_calls[{call_index}] needs a name and arguments object"
+                )
         min_calls = case.get("min_tool_calls", 0)
         if type(min_calls) is not int or not 0 <= min_calls <= 5:
             raise ValueError(f"Case {name!r}: min_tool_calls must be an integer from 0 to 5")
@@ -120,6 +133,7 @@ def run_case(
     started = time.monotonic()
     checks: list[str] = []
     tool_names: list[str] = []
+    observed_tool_calls: list[dict[str, Any]] = []
     task_status = "not_created"
     tool_calls = 0
     try:
@@ -150,6 +164,17 @@ def run_case(
                         name = str(execution.get("tool_name") or execution.get("name") or "")
                         if name:
                             tool_names.append(name)
+                        raw_arguments = execution.get("input_json", execution.get("arguments"))
+                        if isinstance(raw_arguments, str):
+                            try:
+                                raw_arguments = json.loads(raw_arguments)
+                            except json.JSONDecodeError:
+                                raw_arguments = None
+                        if name:
+                            observed_tool_calls.append({
+                                "name": name,
+                                "arguments": raw_arguments if isinstance(raw_arguments, dict) else None,
+                            })
                 expected_status = case.get("expected_task_status", "succeeded")
                 if task_status != expected_status:
                     checks.append("unexpected_task_status")
@@ -163,6 +188,9 @@ def run_case(
         actual_tools = set(tool_names)
         if any(expected_tool not in actual_tools for expected_tool in case.get("expected_tools", [])):
             checks.append("expected_tool_missing")
+        expected_calls = case.get("expected_tool_calls", [])
+        if expected_calls and observed_tool_calls != expected_calls:
+            checks.append("tool_call_arguments_mismatch")
         return {
             "name": case["name"],
             "passed": not checks,
