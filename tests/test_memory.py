@@ -381,3 +381,34 @@ def test_list_memories_bulk_loads_records_without_per_record_queries(tmp_path, m
 
     limited = store.list_memories(limit=1)
     assert [item["id"] for item in limited] == [newer["id"]]
+
+
+
+def test_memory_search_index_backfills_existing_records_and_tracks_writes(tmp_path):
+    database = tmp_path / "memory-index-migration.sqlite3"
+    store = TaskStore(database)
+    old = store.add_memory("project", "Legacy CROWS_INDEX_MIGRATION_7319")
+    with store.connect() as con:
+        con.execute("DROP TABLE memory_search_terms")
+        con.execute("DROP TABLE memory_search_index_meta")
+
+    # Reopening an older database rebuilds the index from durable memory rows.
+    migrated = TaskStore(database)
+    results = migrated.search_memories("CROWS_INDEX_MIGRATION_7319")
+    assert results and results[0]["id"] == old["id"]
+
+    created = migrated.add_memory(
+        "note", "Fresh indexed fact ORBIT_SEARCH_4821", tags=["archive-tag"]
+    )
+    assert migrated.search_memories("ORBIT_SEARCH_4821")[0]["id"] == created["id"]
+    assert migrated.search_memories("archive-tag")[0]["id"] == created["id"]
+
+    assert migrated.delete_memory(created["id"]) is True
+    assert migrated.search_memories("ORBIT_SEARCH_4821") == []
+
+
+def test_memory_search_index_preserves_unicode_whole_word_matching(tmp_path):
+    store = TaskStore(tmp_path / "unicode-memory-index.sqlite3")
+    saved = store.add_memory("note", "İstanbul CROWS-indexed")
+    assert store.search_memories("İSTANBUL")[0]["id"] == saved["id"]
+    assert store.search_memories("art") == []

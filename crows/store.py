@@ -22,6 +22,16 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _memory_search_tokens(*values: str) -> set[str]:
+    """Return normalized whole-word tokens using the same Unicode rules as search."""
+    return {
+        token.casefold()
+        for value in values
+        for token in re.findall(r"\w+", value, flags=re.UNICODE)
+        if token
+    }
+
+
 class TaskStore:
     """Durable task journal; never blindly replay work with uncertain outcomes."""
     def __init__(self, db_path: Path):
@@ -116,6 +126,16 @@ class TaskStore:
               source TEXT NOT NULL DEFAULT 'user', tags_json TEXT NOT NULL DEFAULT '[]',
               created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS memory_search_terms (
+              memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+              term TEXT NOT NULL,
+              PRIMARY KEY(memory_id, term)
+            );
+            CREATE INDEX IF NOT EXISTS idx_memory_search_terms_term
+              ON memory_search_terms(term, memory_id);
+            CREATE TABLE IF NOT EXISTS memory_search_index_meta (
+              version INTEGER NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS sessions (
               id TEXT PRIMARY KEY, title TEXT NOT NULL,
               created_at TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -160,6 +180,29 @@ class TaskStore:
             CREATE INDEX IF NOT EXISTS idx_session_messages_session_created
               ON session_messages(session_id, created_at);
             """)
+            # Backfill the token index once for databases created before indexed
+            # memory search. The metadata row makes startup independent of memory
+            # count after the initial migration.
+            index_version = con.execute(
+                "SELECT version FROM memory_search_index_meta LIMIT 1"
+            ).fetchone()
+            if index_version is None or index_version["version"] < 1:
+                con.execute("DELETE FROM memory_search_terms")
+                memory_rows = con.execute(
+                    "SELECT id, category, content, tags_json FROM memories"
+                ).fetchall()
+                for memory in memory_rows:
+                    tags = json.loads(memory["tags_json"])
+                    tokens = _memory_search_tokens(
+                        memory["category"], memory["content"], *tags
+                    )
+                    con.executemany(
+                        "INSERT OR IGNORE INTO memory_search_terms(memory_id, term) VALUES(?, ?)",
+                        [(memory["id"], token) for token in tokens],
+                    )
+                con.execute("DELETE FROM memory_search_index_meta")
+                con.execute("INSERT INTO memory_search_index_meta(version) VALUES(1)")
+
             route_columns = con.execute("PRAGMA table_info(messaging_session_routes)").fetchall()
             if route_columns and not any(row["name"] == "route_id" for row in route_columns):
                 con.execute("ALTER TABLE messaging_session_routes RENAME TO messaging_session_routes_legacy")
@@ -711,10 +754,18 @@ class TaskStore:
                    tags: list[str] | None = None) -> dict[str, Any]:
         memory_id, now = str(uuid4()), utc_now()
         with self.connect() as con:
+            clean_category = category.strip()
+            clean_content = content.strip()
+            clean_tags = tags or []
             con.execute(
                 "INSERT INTO memories(id,category,content,source,tags_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
-                (memory_id, category.strip(), content.strip(), source.strip() or "user",
-                 json.dumps(tags or [], ensure_ascii=False), now, now),
+                (memory_id, clean_category, clean_content, source.strip() or "user",
+                 json.dumps(clean_tags, ensure_ascii=False), now, now),
+            )
+            tokens = _memory_search_tokens(clean_category, clean_content, *clean_tags)
+            con.executemany(
+                "INSERT INTO memory_search_terms(memory_id, term) VALUES(?, ?)",
+                [(memory_id, token) for token in tokens],
             )
         return self.get_memory(memory_id)  # type: ignore[return-value]
 
@@ -760,51 +811,67 @@ class TaskStore:
         return memories
 
     def search_memories(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
-        import re
-
         stop_words = {
             "what", "which", "did", "do", "does", "i", "you", "my", "me",
             "the", "a", "an", "is", "was", "were", "to", "of", "for",
             "in", "on", "that", "this", "please", "ask", "asked", "remember", "recall", "memorized", "saved",
         }
-        # Match complete words rather than substrings (e.g. "art" must not
-        # match "party"). Splitting hyphens/underscores keeps identifiers searchable
-        # by their meaningful components as well as their full text.
         terms = [
-            term.casefold()
-            for term in re.findall(r"\w+", query, flags=re.UNICODE)
-            if term.casefold() not in stop_words
+            term for term in _memory_search_tokens(query)
+            if term not in stop_words
         ]
         if limit <= 0 or not terms:
-            # Empty/stop-word-only queries must not match every explicit memory
-            # merely because the query resembles a natural-language recall request.
             return []
-        # Search the complete saved-memory history so older facts remain recallable.
-        candidates = self.list_memories(limit=None)
+
         recall_intent = bool(
             re.search(r"\b(remember|recall|memorized|saved)\b", query, re.IGNORECASE)
             and re.search(r"\b(what|which|code|thing|information|detail)\b", query, re.IGNORECASE)
         )
-        ranked = []
-        for item in candidates:
-            haystack = (
-                item["category"] + " " + item["content"] + " " + " ".join(item["tags"])
+        with self.connect() as con:
+            # A connection-local term table avoids SQLite's bound-variable limit
+            # for long queries while allowing the persistent index to use its
+            # (term, memory_id) index instead of scanning every saved memory.
+            con.execute(
+                "CREATE TEMP TABLE query_memory_terms(term TEXT PRIMARY KEY) WITHOUT ROWID"
             )
-            # Tokenize before casefolding so Unicode characters such as dotted İ
-            # remain part of a searchable token.
-            haystack_terms = {
-                token.casefold()
-                for token in re.findall(r"\w+", haystack, flags=re.UNICODE)
-            }
-            score = sum(1 for term in terms if term in haystack_terms)
-            # Natural-language recall questions may not contain the saved value.
-            # Give explicit user-requested memories a modest boost for those queries.
-            if recall_intent and item.get("source") == "explicit_chat_request":
-                score += 3
-            if score:
-                ranked.append((score, item["updated_at"], item))
-        ranked.sort(key=lambda row: (row[0], row[1]), reverse=True)
-        return [item for _, _, item in ranked[:limit]]
+            con.executemany(
+                "INSERT INTO query_memory_terms(term) VALUES(?)",
+                [(term,) for term in terms],
+            )
+            rows = con.execute(
+                """
+                WITH candidate_scores AS (
+                    SELECT indexed.memory_id, COUNT(*) AS matched_terms
+                    FROM memory_search_terms AS indexed
+                    JOIN query_memory_terms AS matched ON matched.term=indexed.term
+                    GROUP BY indexed.memory_id
+                ),
+                candidate_ids AS (
+                    SELECT memory_id FROM candidate_scores
+                    UNION
+                    SELECT id AS memory_id FROM memories
+                    WHERE ? AND source='explicit_chat_request'
+                )
+                SELECT m.*, (
+                    COALESCE(candidate_scores.matched_terms, 0)
+                    + CASE WHEN ? AND m.source='explicit_chat_request' THEN 3 ELSE 0 END
+                ) AS search_score
+                FROM candidate_ids
+                JOIN memories AS m ON m.id=candidate_ids.memory_id
+                LEFT JOIN candidate_scores ON candidate_scores.memory_id=m.id
+                ORDER BY search_score DESC, m.updated_at DESC, m.id DESC
+                LIMIT ?
+                """,
+                (int(recall_intent), int(recall_intent), limit),
+            ).fetchall()
+
+        results = []
+        for row in rows:
+            item = dict(row)
+            item.pop("search_score", None)
+            item["tags"] = json.loads(item.pop("tags_json"))
+            results.append(item)
+        return results
 
     def delete_memory(self, memory_id: str) -> bool:
         with self.connect() as con:
