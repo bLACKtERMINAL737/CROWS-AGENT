@@ -236,7 +236,7 @@ main>.warning{display:none}main>.panel[style*="margin-top:14px"]{display:none!im
     <textarea id="memoryContent" maxlength="4000" placeholder="A fact or preference you explicitly want Crows to remember"></textarea>
     <label for="memoryTags">Tags (comma-separated)</label>
     <input id="memoryTags" maxlength="300" placeholder="project, style">
-    <div class="actions"><button class="primary" id="saveMemory">Save memory</button></div>
+    <div class="actions"><button class="primary" id="saveMemory">Save memory</button><button id="cancelMemoryEdit" type="button" hidden>Cancel edit</button></div>
     <label for="memoryQuery">Search saved memory</label>
     <div style="display:flex;gap:8px"><input id="memoryQuery" maxlength="300" placeholder="Search by keywords"><button id="searchMemory">Search</button><button id="listMemory">List all</button></div>
     <div id="memoryStatus" class="status" role="status"></div>
@@ -672,19 +672,40 @@ $("sendChat").onclick=sendChat;
 $("chatInput").addEventListener("keydown",event=>{
  if(event.key==="Enter"&&!event.shiftKey){event.preventDefault();sendChat();}
 });
+let editingMemoryId=null;
+function resetMemoryEditor(){
+ editingMemoryId=null;
+ $("memoryCategory").value="preference";
+ $("memoryContent").value="";
+ $("memoryTags").value="";
+ $("saveMemory").textContent="Save memory";
+ $("cancelMemoryEdit").hidden=true;
+}
 function renderMemories(items){
  const container=$("memoryResults");container.replaceChildren();
  if(!items.length){container.textContent="No matching memories.";return;}
  for(const item of items){
-   const card=document.createElement("div");card.className="file";card.style.display="block";
-   const heading=document.createElement("div");heading.style.display="flex";heading.style.justifyContent="space-between";heading.style.gap="8px";
-   const title=document.createElement("strong");title.textContent=item.category;
-   const remove=document.createElement("button");remove.textContent="Delete";
-   remove.onclick=async()=>{try{await api("/memory/"+encodeURIComponent(item.id),{method:"DELETE"});await loadMemories();setStatus("memoryStatus","Memory deleted.","good");}catch(e){setStatus("memoryStatus",e.message,"bad");}};
-   heading.append(title,remove);
-   const body=document.createElement("div");body.textContent=item.content;body.style.marginTop="6px";
-   const meta=document.createElement("div");meta.className="muted small";meta.textContent=(item.tags||[]).join(", ")+(item.source?" · source: "+item.source:"");
-   card.append(heading,body,meta);container.append(card);
+  const card=document.createElement("div");card.className="file";card.style.display="block";
+  const heading=document.createElement("div");heading.style.display="flex";heading.style.justifyContent="space-between";heading.style.gap="8px";
+  const title=document.createElement("strong");title.textContent=item.category;
+  const controls=document.createElement("div");controls.style.display="flex";controls.style.gap="6px";
+  const edit=document.createElement("button");edit.textContent="Edit";
+  edit.onclick=()=>{
+   editingMemoryId=item.id;
+   $("memoryCategory").value=item.category||"";
+   $("memoryContent").value=item.content||"";
+   $("memoryTags").value=(item.tags||[]).join(", ");
+   $("saveMemory").textContent="Update memory";
+   $("cancelMemoryEdit").hidden=false;
+   $("memoryCategory").focus();
+   setStatus("memoryStatus","Editing saved memory. Make changes and select Update memory.","good");
+  };
+  const remove=document.createElement("button");remove.textContent="Delete";
+  remove.onclick=async()=>{try{await api("/memory/"+encodeURIComponent(item.id),{method:"DELETE"});if(editingMemoryId===item.id)resetMemoryEditor();await loadMemories();setStatus("memoryStatus","Memory deleted.","good");}catch(e){setStatus("memoryStatus",e.message,"bad");}};
+  controls.append(edit,remove);heading.append(title,controls);
+  const body=document.createElement("div");body.textContent=item.content;body.style.marginTop="6px";
+  const meta=document.createElement("div");meta.className="muted small";meta.textContent=(item.tags||[]).join(", ")+(item.source?" · source: "+item.source:"");
+  card.append(heading,body,meta);container.append(card);
  }
 }
 async function loadMemories(query=""){
@@ -700,10 +721,17 @@ $("saveMemory").onclick=async()=>{
  if(!category||!content){setStatus("memoryStatus","Enter a category and memory content.","bad");return;}
  try{
   const tags=$("memoryTags").value.split(",").map(t=>t.trim()).filter(Boolean).slice(0,20);
-  await api("/memory",{method:"POST",body:JSON.stringify({category,content,source:"user",tags})});
-  $("memoryContent").value="";setStatus("memoryStatus","Memory saved locally.","good");await loadMemories();
+  if(editingMemoryId){
+   await api("/memory/"+encodeURIComponent(editingMemoryId),{method:"PATCH",body:JSON.stringify({category,content,tags})});
+   resetMemoryEditor();setStatus("memoryStatus","Memory updated locally.","good");
+  }else{
+   await api("/memory",{method:"POST",body:JSON.stringify({category,content,source:"user",tags})});
+   $("memoryContent").value="";$("memoryTags").value="";setStatus("memoryStatus","Memory saved locally.","good");
+  }
+  await loadMemories($("memoryQuery").value);
  }catch(e){setStatus("memoryStatus",e.message,"bad");}
 };
+$("cancelMemoryEdit").onclick=()=>{resetMemoryEditor();setStatus("memoryStatus","Memory edit cancelled.","good");};
 $("searchMemory").onclick=()=>loadMemories($("memoryQuery").value);
 $("listMemory").onclick=()=>loadMemories();
 async function refreshFiles(){
