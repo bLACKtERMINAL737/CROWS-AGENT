@@ -64,6 +64,20 @@ def load_cases(path: Path) -> list[dict[str, Any]]:
                 raise ValueError(
                     f"Case {name!r}: expected_tool_calls[{call_index}] needs a name and arguments object"
                 )
+        expected_facts = case.get("expected_tool_facts", [])
+        if not isinstance(expected_facts, list):
+            raise ValueError(f"Case {name!r}: expected_tool_facts must be a list")
+        for fact_index, fact in enumerate(expected_facts):
+            if (
+                not isinstance(fact, dict)
+                or not isinstance(fact.get("tool_name"), str)
+                or not fact["tool_name"].strip()
+                or not isinstance(fact.get("value"), str)
+                or not fact["value"].strip()
+            ):
+                raise ValueError(
+                    f"Case {name!r}: expected_tool_facts[{fact_index}] needs a tool_name and non-empty value"
+                )
         min_calls = case.get("min_tool_calls", 0)
         if type(min_calls) is not int or not 0 <= min_calls <= 5:
             raise ValueError(f"Case {name!r}: min_tool_calls must be an integer from 0 to 5")
@@ -137,6 +151,7 @@ def run_case(
     checks: list[str] = []
     tool_names: list[str] = []
     observed_tool_calls: list[dict[str, Any]] = []
+    observed_tool_results: list[dict[str, Any]] = []
     task_status = "not_created"
     tool_calls = 0
     try:
@@ -182,6 +197,17 @@ def run_case(
                                 "name": name,
                                 "arguments": raw_arguments if isinstance(raw_arguments, dict) else None,
                             })
+                            raw_result = execution.get("result_json", execution.get("result"))
+                            if isinstance(raw_result, str):
+                                try:
+                                    raw_result = json.loads(raw_result)
+                                except json.JSONDecodeError:
+                                    raw_result = None
+                            observed_tool_results.append({
+                                "name": name,
+                                "status": execution.get("status"),
+                                "result": raw_result,
+                            })
                 expected_status = case.get("expected_task_status", "succeeded")
                 if task_status != expected_status:
                     checks.append("unexpected_task_status")
@@ -198,6 +224,27 @@ def run_case(
         expected_calls = case.get("expected_tool_calls", [])
         if expected_calls and observed_tool_calls != expected_calls:
             checks.append("tool_call_arguments_mismatch")
+        for fact in case.get("expected_tool_facts", []):
+            matching = [
+                item for item in observed_tool_results
+                if item["name"] == fact["tool_name"] and item["status"] == "succeeded"
+            ]
+            if not matching:
+                checks.append("expected_tool_result_missing")
+                continue
+            try:
+                source_text = json.dumps(
+                    [item["result"] for item in matching],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ).casefold()
+            except (TypeError, ValueError):
+                source_text = ""
+            expected_value = fact["value"].casefold()
+            if expected_value not in source_text:
+                checks.append("tool_result_missing_expected_fact")
+            if expected_value not in normalized_answer:
+                checks.append("answer_not_grounded_in_tool_result")
         return {
             "name": case["name"],
             "passed": not checks,
