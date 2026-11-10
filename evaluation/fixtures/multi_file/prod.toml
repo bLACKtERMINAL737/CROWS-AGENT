@@ -1,4 +1,0 @@
-[service]
-name = "crows"
-timeout_seconds = 30
-log_level = "info"
