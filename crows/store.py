@@ -727,15 +727,28 @@ class TaskStore:
         result["tags"] = json.loads(result.pop("tags_json"))
         return result
 
-    def list_memories(self, limit: int = 100, category: str | None = None) -> list[dict[str, Any]]:
+    def list_memories(self, limit: int | None = 100, category: str | None = None) -> list[dict[str, Any]]:
         with self.connect() as con:
             if category:
+                if limit is None:
+                    rows = con.execute(
+                        "SELECT id FROM memories WHERE category=? ORDER BY updated_at DESC, id DESC",
+                        (category,),
+                    ).fetchall()
+                else:
+                    rows = con.execute(
+                        "SELECT id FROM memories WHERE category=? ORDER BY updated_at DESC, id DESC LIMIT ?",
+                        (category, limit),
+                    ).fetchall()
+            elif limit is None:
                 rows = con.execute(
-                    "SELECT id FROM memories WHERE category=? ORDER BY updated_at DESC LIMIT ?",
-                    (category, limit),
+                    "SELECT id FROM memories ORDER BY updated_at DESC, id DESC"
                 ).fetchall()
             else:
-                rows = con.execute("SELECT id FROM memories ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
+                rows = con.execute(
+                    "SELECT id FROM memories ORDER BY updated_at DESC, id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
         return [item for row in rows if (item := self.get_memory(row["id"])) is not None]
 
     def search_memories(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
@@ -758,7 +771,8 @@ class TaskStore:
             # Empty/stop-word-only queries must not match every explicit memory
             # merely because the query resembles a natural-language recall request.
             return []
-        candidates = self.list_memories(limit=500)
+        # Search the complete saved-memory history so older facts remain recallable.
+        candidates = self.list_memories(limit=None)
         recall_intent = bool(
             re.search(r"\b(remember|recall|memorized|saved)\b", query, re.IGNORECASE)
             and re.search(r"\b(what|which|code|thing|information|detail)\b", query, re.IGNORECASE)

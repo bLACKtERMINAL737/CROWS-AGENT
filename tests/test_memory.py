@@ -340,3 +340,24 @@ async def test_chat_general_recall_missing_fact_fails_closed(tmp_path, monkeypat
     )
 
     assert result["answer"] == "I couldn't find that information in saved memory."
+
+
+def test_memory_search_finds_matching_record_beyond_latest_500(tmp_path):
+    store = TaskStore(tmp_path / "large-memory.sqlite3")
+    old_memory = store.add_memory("project", "CROWS_ARCHIVE_MARKER_7319")
+
+    for index in range(501):
+        store.add_memory("note", f"Unrelated archive entry {index}")
+
+    # Make the target deterministically older than every distractor.
+    with store.connect() as con:
+        con.execute(
+            "UPDATE memories SET updated_at=? WHERE id=?",
+            ("2000-01-01T00:00:00+00:00", old_memory["id"]),
+        )
+
+    results = store.search_memories("CROWS_ARCHIVE_MARKER_7319")
+
+    assert results
+    assert results[0]["id"] == old_memory["id"]
+    assert results[0]["content"] == "CROWS_ARCHIVE_MARKER_7319"
