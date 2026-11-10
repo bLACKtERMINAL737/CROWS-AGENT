@@ -43,9 +43,12 @@ def load_cases(path: Path) -> list[dict[str, Any]]:
         if not isinstance(message, str) or not message.strip() or len(message) > 20_000:
             raise ValueError(f"Case {name!r} needs a message of 1–20000 characters")
         expected = case.get("expected_contains", [])
+        forbidden = case.get("expected_not_contains", [])
         tools = case.get("expected_tools", [])
-        if not isinstance(expected, list) or any(not isinstance(item, str) for item in expected):
-            raise ValueError(f"Case {name!r}: expected_contains must be a list of strings")
+        if not isinstance(expected, list) or any(not isinstance(item, str) or not item.strip() for item in expected):
+            raise ValueError(f"Case {name!r}: expected_contains must be a list of non-empty strings")
+        if not isinstance(forbidden, list) or any(not isinstance(item, str) or not item.strip() for item in forbidden):
+            raise ValueError(f"Case {name!r}: expected_not_contains must be a list of non-empty strings")
         if not isinstance(tools, list) or any(not isinstance(item, str) or not item.strip() for item in tools):
             raise ValueError(f"Case {name!r}: expected_tools must be a list of non-empty strings")
         expected_calls = case.get("expected_tool_calls", [])
@@ -143,9 +146,13 @@ def run_case(
         answer = str(response.get("answer", ""))
         if not answer:
             checks.append("empty_answer")
+        normalized_answer = answer.casefold()
         expected = [item.casefold() for item in case.get("expected_contains", [])]
-        if any(item not in answer.casefold() for item in expected):
+        if any(item not in normalized_answer for item in expected):
             checks.append("expected_text_missing")
+        forbidden = [item.casefold() for item in case.get("expected_not_contains", [])]
+        if any(item in normalized_answer for item in forbidden):
+            checks.append("forbidden_text_present")
         tool_calls = int(response.get("tool_calls", 0) or 0)
         task_id = response.get("task_id")
         if task_id:
