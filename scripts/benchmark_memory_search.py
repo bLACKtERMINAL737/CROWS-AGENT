@@ -18,7 +18,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from crows.memory_search import MEMORY_SEARCH_SQL
 from crows.store import TaskStore, _memory_search_tokens
