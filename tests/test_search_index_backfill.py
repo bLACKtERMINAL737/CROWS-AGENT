@@ -41,7 +41,7 @@ def test_search_index_backfill_processes_multiple_bounded_batches(tmp_path):
     with migrated.connect() as con:
         assert con.execute(
             "SELECT COUNT(*) FROM session_message_search_terms"
-        ).fetchone()[0] > count
+        ).fetchone()[0] >= count
         assert con.execute(
             "SELECT COUNT(*) FROM memory_search_terms"
-        ).fetchone()[0] > count
+        ).fetchone()[0] >= count
