@@ -36,7 +36,6 @@ candidate_ids AS (
 )
 SELECT m.*, (
     COALESCE(candidate_scores.matched_terms, 0)
-    + CASE WHEN m.source='explicit_chat_request' THEN 3 ELSE 0 END
 ) AS search_score
 FROM candidate_ids
 JOIN memories AS m ON m.id=candidate_ids.memory_id
