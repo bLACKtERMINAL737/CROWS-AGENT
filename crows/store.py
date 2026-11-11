@@ -10,7 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from .file_lock import file_lock
-from .memory_search import MEMORY_SEARCH_SQL
+from .memory_search import MEMORY_SEARCH_RECALL_SQL, MEMORY_SEARCH_SQL
 
 STATUSES = {"queued", "running", "succeeded", "failed", "unknown"}
 
@@ -887,10 +887,8 @@ class TaskStore:
                 "INSERT INTO query_memory_terms(term) VALUES(?)",
                 [(term,) for term in terms],
             )
-            rows = con.execute(
-                MEMORY_SEARCH_SQL,
-                (int(recall_intent), int(recall_intent), limit),
-            ).fetchall()
+            search_sql = MEMORY_SEARCH_RECALL_SQL if recall_intent else MEMORY_SEARCH_SQL
+            rows = con.execute(search_sql, (limit,)).fetchall()
 
         results = []
         for row in rows:
