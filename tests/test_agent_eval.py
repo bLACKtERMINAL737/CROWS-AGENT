@@ -495,3 +495,44 @@ def test_tool_fact_requires_successful_matching_tool_execution(monkeypatch):
 
     assert result["passed"] is False
     assert "expected_tool_result_missing" in result["checks_failed"]
+
+
+def test_run_case_records_bounded_model_routing_metadata(monkeypatch):
+    responses = iter([{
+        "answer": "Task complete.", "task_id": None, "tool_calls": 0,
+        "route": "coding", "model": "openai/gpt-4o-mini",
+        "fallback_used": True, "attempts": 2,
+    }])
+    monkeypatch.setattr(agent_eval, "_request_json", lambda *_a, **_kw: next(responses))
+    result = agent_eval.run_case(
+        {"name": "routing metadata", "message": "Complete a task", "mode": "manual",
+         "task_type": "coding", "model_route": "coding"},
+        base_url="http://127.0.0.1:8000", token="test-token", timeout=1,
+    )
+    assert result["mode"] == "manual"
+    assert result["route"] == "coding"
+    assert result["model"] == "openai/gpt-4o-mini"
+    assert result["fallback_used"] is True
+    assert result["attempts"] == 2
+
+
+def test_response_metadata_omits_unavailable_or_unsafe_values():
+    metadata = agent_eval.response_metadata(
+        {"route": "https://provider.example/api?key=secret",
+         "model": "model-name\\nsecret", "fallback_used": "false", "attempts": True},
+        {"mode": "auto"},
+    )
+    assert metadata == {"mode": "auto"}
+
+
+def test_response_metadata_keeps_valid_route_without_inventing_cost():
+    metadata = agent_eval.response_metadata(
+        {"route": "primary", "model": "provider/model-v2",
+         "fallback_used": False, "attempts": 1},
+        {"mode": "auto"},
+    )
+    assert metadata == {
+        "mode": "auto", "route": "primary", "model": "provider/model-v2",
+        "fallback_used": False, "attempts": 1,
+    }
+    assert "cost" not in metadata

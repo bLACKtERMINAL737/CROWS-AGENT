@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -130,6 +131,24 @@ def _request_json(
     return decoded
 
 
+def response_metadata(response: dict[str, Any], case: dict[str, Any]) -> dict[str, Any]:
+    """Keep only bounded, non-secret routing metadata from a chat response."""
+    metadata: dict[str, Any] = {"mode": case.get("mode", "auto")}
+    route = response.get("route")
+    if isinstance(route, str) and re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", route):
+        metadata["route"] = route
+    model = response.get("model")
+    if isinstance(model, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}", model):
+        metadata["model"] = model
+    fallback_used = response.get("fallback_used")
+    if isinstance(fallback_used, bool):
+        metadata["fallback_used"] = fallback_used
+    attempts = response.get("attempts")
+    if type(attempts) is int and 1 <= attempts <= 100:
+        metadata["attempts"] = attempts
+    return metadata
+
+
 def run_case(
     case: dict[str, Any],
     *,
@@ -154,10 +173,12 @@ def run_case(
     observed_tool_results: list[dict[str, Any]] = []
     task_status = "not_created"
     tool_calls = 0
+    routing_metadata: dict[str, Any] = {"mode": case.get("mode", "auto")}
     try:
         response = _request_json(
             base_url.rstrip("/") + "/chat", token=token, payload=payload, timeout=timeout
         )
+        routing_metadata = response_metadata(response, case)
         answer = str(response.get("answer", ""))
         if not answer:
             checks.append("empty_answer")
@@ -253,6 +274,7 @@ def run_case(
             "task_status": task_status,
             "tool_calls": tool_calls,
             "tools_observed": sorted(set(tool_names)),
+            **routing_metadata,
         }
     except RuntimeError as exc:
         return {
@@ -263,6 +285,7 @@ def run_case(
             "task_status": task_status,
             "tool_calls": tool_calls,
             "tools_observed": sorted(set(tool_names)),
+            **routing_metadata,
         }
 
 
