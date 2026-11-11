@@ -114,7 +114,7 @@ def explain_production_query(store: TaskStore, query: str) -> list[str]:
         )
         rows = con.execute(
             "EXPLAIN QUERY PLAN " + MEMORY_SEARCH_SQL,
-            (0, 0, 5),
+            (5,),
         ).fetchall()
     return [row["detail"] for row in rows]
 
@@ -130,9 +130,11 @@ def benchmark_workload(
             "SEARCH indexed USING COVERING INDEX idx_memory_search_terms_term" in detail
             for detail in query_plan
         )
-        if not index_used:
+        full_scan_avoided = not any(detail == "SCAN memories" for detail in query_plan)
+        if not index_used or not full_scan_avoided:
             raise RuntimeError(
-                f"Production query did not select the expected term index for {workload_name}: "
+                f"Production query plan regression for {workload_name} "
+                f"(term_index_used={index_used}, full_scan_avoided={full_scan_avoided}): "
                 + "; ".join(query_plan)
             )
 
@@ -165,6 +167,7 @@ def benchmark_workload(
             "max_ms": round(max(samples_ms), 3),
             "result_verified": True,
             "production_query_term_index_used": index_used,
+            "full_memories_scan_avoided": full_scan_avoided,
             "query_plan": query_plan,
         }
 
