@@ -182,7 +182,37 @@ class TaskStore:
             );
             CREATE INDEX IF NOT EXISTS idx_session_messages_session_created
               ON session_messages(session_id, created_at);
+            CREATE TABLE IF NOT EXISTS session_message_search_terms (
+              message_id TEXT NOT NULL REFERENCES session_messages(id) ON DELETE CASCADE,
+              term TEXT NOT NULL,
+              PRIMARY KEY(message_id, term)
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_message_search_terms_term
+              ON session_message_search_terms(term, message_id);
+            CREATE TABLE IF NOT EXISTS session_message_search_index_meta (
+              version INTEGER NOT NULL
+            );
             """)
+            # Backfill existing messages once. The version marker keeps later
+            # startups independent of conversation history size.
+            message_index_version = con.execute(
+                "SELECT version FROM session_message_search_index_meta LIMIT 1"
+            ).fetchone()
+            if message_index_version is None or message_index_version["version"] < 1:
+                con.execute("DELETE FROM session_message_search_terms")
+                message_rows = con.execute(
+                    "SELECT id, content FROM session_messages"
+                ).fetchall()
+                for message in message_rows:
+                    tokens = _memory_search_tokens(message["content"])
+                    con.executemany(
+                        "INSERT OR IGNORE INTO session_message_search_terms(message_id, term) "
+                        "VALUES(?, ?)",
+                        [(message["id"], token) for token in tokens],
+                    )
+                con.execute("DELETE FROM session_message_search_index_meta")
+                con.execute("INSERT INTO session_message_search_index_meta(version) VALUES(1)")
+
             # Backfill the token index once for databases created before indexed
             # memory search. The metadata row makes startup independent of memory
             # count after the initial migration.
@@ -987,6 +1017,10 @@ class TaskStore:
                 now = max(now_dt, latest_dt + timedelta(microseconds=1)).isoformat()
             con.execute("INSERT INTO session_messages(id,session_id,role,content,created_at) VALUES(?,?,?,?,?)",
                         (message_id, session_id, role, content, now))
+            con.executemany(
+                "INSERT INTO session_message_search_terms(message_id, term) VALUES(?, ?)",
+                [(message_id, token) for token in _memory_search_tokens(content)],
+            )
             con.execute("UPDATE sessions SET updated_at=? WHERE id=?", (now, session_id))
             if role == "user":
                 first_user = con.execute(
@@ -1035,6 +1069,16 @@ class TaskStore:
                 "INSERT INTO session_messages(id,session_id,role,content,created_at) VALUES(?,?,?,?,?)",
                 (assistant_id, session_id, "assistant", assistant_content, assistant_created_at),
             )
+            con.executemany(
+                "INSERT INTO session_message_search_terms(message_id, term) VALUES(?, ?)",
+                [
+                    (message_id, token)
+                    for message_id, content in (
+                        (user_id, user_content), (assistant_id, assistant_content)
+                    )
+                    for token in _memory_search_tokens(content)
+                ],
+            )
             title = user_content.strip().replace("\\n", " ")[:80] or "New conversation"
             con.execute(
                 "UPDATE sessions SET updated_at=?, title=CASE WHEN title='New conversation' THEN ? ELSE title END WHERE id=?",
@@ -1059,41 +1103,38 @@ class TaskStore:
         return [dict(row) for row in rows]
 
     def search_session_messages(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
-        """Search message text across conversations, ranked by matching query terms."""
+        """Search message text through the Unicode-normalized token index."""
         if limit <= 0:
             return []
-        import re
-
-        terms = list(dict.fromkeys(
-            term.casefold()
-            for term in re.findall(r"\w+", query, flags=re.UNICODE)
-            if term.casefold()
-        ))
+        terms = sorted(_memory_search_tokens(query))
         if not terms:
             return []
-        conditions = " OR ".join("instr(crows_casefold(m.content), crows_casefold(?)) > 0" for _ in terms)
         with self.connect() as con:
+            con.execute(
+                "CREATE TEMP TABLE query_session_message_terms "
+                "(term TEXT PRIMARY KEY) WITHOUT ROWID"
+            )
+            con.executemany(
+                "INSERT INTO query_session_message_terms(term) VALUES(?)",
+                [(term,) for term in terms],
+            )
             rows = con.execute(
                 "SELECT m.id, m.session_id, s.title AS session_title, m.role, "
-                "m.content, m.created_at FROM session_messages AS m "
-                "JOIN sessions AS s ON s.id=m.session_id WHERE " + conditions,
-                terms,
+                "m.content, m.created_at "
+                "FROM ("
+                "  SELECT indexed.message_id, COUNT(*) AS score "
+                "  FROM query_session_message_terms AS query "
+                "  CROSS JOIN session_message_search_terms AS indexed "
+                "    INDEXED BY idx_session_message_search_terms_term "
+                "  WHERE indexed.term = query.term "
+                "  GROUP BY indexed.message_id"
+                ") AS matches "
+                "JOIN session_messages AS m ON m.id = matches.message_id "
+                "JOIN sessions AS s ON s.id = m.session_id "
+                "ORDER BY matches.score DESC, m.created_at DESC LIMIT ?",
+                (limit,),
             ).fetchall()
-        ranked = []
-        for row in rows:
-            item = dict(row)
-            # Tokenize before casefolding: Unicode casefolding can introduce
-            # combining marks (for example, İ -> i + combining dot), which
-            # Python's \\w pattern does not include when scanning folded text.
-            haystack_terms = {
-                token.casefold()
-                for token in re.findall(r"\w+", item["content"], flags=re.UNICODE)
-            }
-            score = sum(1 for term in terms if term in haystack_terms)
-            if score:
-                ranked.append((score, item["created_at"], item))
-        ranked.sort(key=lambda entry: (entry[0], entry[1]), reverse=True)
-        return [item for _, _, item in ranked[:limit]]
+        return [dict(row) for row in rows]
 
     def delete_session(self, session_id: str) -> bool:
         with self.connect() as con:
