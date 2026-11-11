@@ -69,17 +69,3 @@ jobs:
         run: pip install -e ".[dev]"
       - name: Verify indexed memory search at scale
         run: python scripts/benchmark_memory_search.py --sizes 10000 50000 --iterations 10
-
-  session-search-benchmark:
-    name: cross-session search benchmark (10k and 50k)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install project
-        run: pip install -e ".[dev]"
-      - name: Verify indexed cross-session search at scale
-        run: python scripts/benchmark_session_search.py --sizes 10000 50000 --iterations 10

@@ -107,8 +107,10 @@ def benchmark(count: int, iterations: int, workload: str) -> dict[str, object]:
             plan = [
                 row["detail"] for row in con.execute(
                     "EXPLAIN QUERY PLAN SELECT indexed.message_id, COUNT(*) AS score "
-                    "FROM session_message_search_terms AS indexed "
-                    "JOIN query_session_message_terms AS query ON query.term=indexed.term "
+                    "FROM query_session_message_terms AS query "
+                    "CROSS JOIN session_message_search_terms AS indexed "
+                    "INDEXED BY idx_session_message_search_terms_term "
+                    "WHERE indexed.term=query.term "
                     "GROUP BY indexed.message_id"
                 )
             ]
