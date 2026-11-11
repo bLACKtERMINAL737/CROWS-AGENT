@@ -573,3 +573,25 @@ def test_memory_recall_intent_uses_explicit_source_index(tmp_path):
         for detail in details
     ), details
     assert not any(detail == "SCAN memories" for detail in details), details
+
+
+def test_memory_recall_intent_uses_source_index_with_large_unrelated_corpus(tmp_path):
+    store = TaskStore(tmp_path / "memory-recall-large-corpus.sqlite3")
+    saved = store.add_memory(
+        "note",
+        "CROWS_RECALL_INTENT_LARGE_CORPUS_7319",
+        source="explicit_chat_request",
+    )
+    for index in range(250):
+        store.add_memory(
+            "archive",
+            f"Unrelated archive record {index} with routine project notes",
+            source="chat",
+        )
+
+    results = store.search_memories(
+        "What code did I ask you to remember?",
+        limit=5,
+    )
+    assert results
+    assert results[0]["id"] == saved["id"]
