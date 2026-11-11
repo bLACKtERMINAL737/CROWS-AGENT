@@ -595,3 +595,43 @@ def test_memory_recall_intent_uses_source_index_with_large_unrelated_corpus(tmp_
     )
     assert results
     assert results[0]["id"] == saved["id"]
+
+
+def test_memory_recall_prefers_strong_lexical_match_over_unrelated_explicit_memory(tmp_path):
+    store = TaskStore(tmp_path / "recall-ranking.sqlite3")
+    unrelated_explicit = store.add_memory(
+        "note",
+        "My unrelated saved travel preference is window seating",
+        source="explicit_chat_request",
+    )
+    relevant = store.add_memory(
+        "project",
+        "CROWS release deployment checklist uses staged rollout validation",
+        source="user",
+    )
+
+    results = store.search_memories(
+        "What did I save about CROWS release deployment checklist?",
+        limit=5,
+    )
+
+    assert results
+    assert results[0]["id"] == relevant["id"]
+    assert results[0]["id"] != unrelated_explicit["id"]
+
+
+def test_memory_recall_still_returns_explicit_candidate_without_lexical_match(tmp_path):
+    store = TaskStore(tmp_path / "recall-fallback.sqlite3")
+    saved = store.add_memory(
+        "note",
+        "ORBIT-RECALL-FALLBACK-7319",
+        source="explicit_chat_request",
+    )
+
+    results = store.search_memories(
+        "What code did I explicitly ask you to remember?",
+        limit=5,
+    )
+
+    assert results
+    assert results[0]["id"] == saved["id"]
