@@ -516,3 +516,28 @@ def test_memory_search_candidate_lookup_uses_term_index(tmp_path):
         "SEARCH indexed USING COVERING INDEX idx_memory_search_terms_term" in detail
         for detail in details
     ), details
+
+
+def test_memory_search_does_not_fallback_scan_explicit_memories(tmp_path):
+    store = TaskStore(tmp_path / "memory-search-no-fallback.sqlite3")
+    store.add_memory(
+        "note",
+        "CROWS_EXPLICIT_RECALL_ONLY_92841",
+        source="explicit_chat_request",
+    )
+
+    assert store.search_memories("unrelated ordinary lookup") == []
+
+
+def test_memory_recall_intent_keeps_explicit_memory_candidates(tmp_path):
+    store = TaskStore(tmp_path / "memory-search-recall.sqlite3")
+    saved = store.add_memory(
+        "note",
+        "CROWS_EXPLICIT_RECALL_ONLY_92841",
+        source="explicit_chat_request",
+    )
+
+    results = store.search_memories("What code did I ask you to remember?")
+
+    assert results
+    assert results[0]["id"] == saved["id"]
