@@ -14,6 +14,9 @@ from .memory_search import MEMORY_SEARCH_RECALL_SQL, MEMORY_SEARCH_SQL
 
 STATUSES = {"queued", "running", "succeeded", "failed", "unknown"}
 
+# Bound startup memory while rebuilding lexical indexes for existing databases.
+_SEARCH_INDEX_BACKFILL_BATCH_SIZE = 500
+
 
 class IdempotencyConflictError(ValueError):
     """Raised when a key is reused for a different workflow request."""
@@ -200,16 +203,21 @@ class TaskStore:
             ).fetchone()
             if message_index_version is None or message_index_version["version"] < 1:
                 con.execute("DELETE FROM session_message_search_terms")
-                message_rows = con.execute(
+                message_cursor = con.execute(
                     "SELECT id, content FROM session_messages"
-                ).fetchall()
-                for message in message_rows:
-                    tokens = _memory_search_tokens(message["content"])
-                    con.executemany(
-                        "INSERT OR IGNORE INTO session_message_search_terms(message_id, term) "
-                        "VALUES(?, ?)",
-                        [(message["id"], token) for token in tokens],
-                    )
+                )
+                while message_batch := message_cursor.fetchmany(_SEARCH_INDEX_BACKFILL_BATCH_SIZE):
+                    indexed_terms = [
+                        (message["id"], token)
+                        for message in message_batch
+                        for token in _memory_search_tokens(message["content"])
+                    ]
+                    if indexed_terms:
+                        con.executemany(
+                            "INSERT OR IGNORE INTO session_message_search_terms(message_id, term) "
+                            "VALUES(?, ?)",
+                            indexed_terms,
+                        )
                 con.execute("DELETE FROM session_message_search_index_meta")
                 con.execute("INSERT INTO session_message_search_index_meta(version) VALUES(1)")
 
@@ -221,18 +229,24 @@ class TaskStore:
             ).fetchone()
             if index_version is None or index_version["version"] < 1:
                 con.execute("DELETE FROM memory_search_terms")
-                memory_rows = con.execute(
+                memory_cursor = con.execute(
                     "SELECT id, category, content, tags_json FROM memories"
-                ).fetchall()
-                for memory in memory_rows:
-                    tags = json.loads(memory["tags_json"])
-                    tokens = _memory_search_tokens(
-                        memory["category"], memory["content"], *tags
-                    )
-                    con.executemany(
-                        "INSERT OR IGNORE INTO memory_search_terms(memory_id, term) VALUES(?, ?)",
-                        [(memory["id"], token) for token in tokens],
-                    )
+                )
+                while memory_batch := memory_cursor.fetchmany(_SEARCH_INDEX_BACKFILL_BATCH_SIZE):
+                    indexed_terms = []
+                    for memory in memory_batch:
+                        tags = json.loads(memory["tags_json"])
+                        indexed_terms.extend(
+                            (memory["id"], token)
+                            for token in _memory_search_tokens(
+                                memory["category"], memory["content"], *tags
+                            )
+                        )
+                    if indexed_terms:
+                        con.executemany(
+                            "INSERT OR IGNORE INTO memory_search_terms(memory_id, term) VALUES(?, ?)",
+                            indexed_terms,
+                        )
                 con.execute("DELETE FROM memory_search_index_meta")
                 con.execute("INSERT INTO memory_search_index_meta(version) VALUES(1)")
 
