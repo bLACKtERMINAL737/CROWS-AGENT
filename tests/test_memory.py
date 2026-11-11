@@ -635,3 +635,36 @@ def test_memory_recall_still_returns_explicit_candidate_without_lexical_match(tm
 
     assert results
     assert results[0]["id"] == saved["id"]
+
+
+def test_single_term_memory_search_uses_recency_ordered_term_index(tmp_path):
+    store = TaskStore(tmp_path / "single-term-memory-search.sqlite3")
+    older = store.add_memory("note", "common older matching fact")
+    newer = store.add_memory("note", "common newer matching fact")
+    with store.connect() as con:
+        con.execute(
+            "UPDATE memories SET updated_at=? WHERE id=?",
+            ("2000-01-01T00:00:00+00:00", older["id"]),
+        )
+        con.execute(
+            "UPDATE memory_search_terms SET updated_at=? WHERE memory_id=?",
+            ("2000-01-01T00:00:00+00:00", older["id"]),
+        )
+
+    results = store.search_memories("common", limit=2)
+    assert [item["id"] for item in results] == [newer["id"], older["id"]]
+
+    from crows.memory_search import MEMORY_SEARCH_SINGLE_TERM_SQL
+    with store.connect() as con:
+        con.execute(
+            "CREATE TEMP TABLE query_memory_terms(term TEXT PRIMARY KEY) WITHOUT ROWID"
+        )
+        con.execute("INSERT INTO query_memory_terms(term) VALUES(?)", ("common",))
+        plan = con.execute(
+            "EXPLAIN QUERY PLAN " + MEMORY_SEARCH_SINGLE_TERM_SQL, (5,)
+        ).fetchall()
+    details = [row["detail"] for row in plan]
+    assert any(
+        "idx_memory_search_terms_term_updated" in detail for detail in details
+    ), details
+    assert not any("USE TEMP B-TREE FOR ORDER BY" in detail for detail in details), details
