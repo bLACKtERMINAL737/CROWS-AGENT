@@ -20,7 +20,11 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from crows.memory_search import MEMORY_SEARCH_RECALL_SQL, MEMORY_SEARCH_SQL
+from crows.memory_search import (
+    MEMORY_SEARCH_RECALL_SQL,
+    MEMORY_SEARCH_SINGLE_TERM_SQL,
+    MEMORY_SEARCH_SQL,
+)
 from crows.store import TaskStore, _memory_search_tokens
 
 
@@ -120,9 +124,15 @@ def explain_production_query(
             "INSERT INTO query_memory_terms(term) VALUES(?)",
             [(term,) for term in query_terms],
         )
+        search_sql = (
+            MEMORY_SEARCH_RECALL_SQL
+            if recall_intent
+            else MEMORY_SEARCH_SINGLE_TERM_SQL
+            if len(query_terms) == 1
+            else MEMORY_SEARCH_SQL
+        )
         rows = con.execute(
-            "EXPLAIN QUERY PLAN "
-            + (MEMORY_SEARCH_RECALL_SQL if recall_intent else MEMORY_SEARCH_SQL),
+            "EXPLAIN QUERY PLAN " + search_sql,
             (5,),
         ).fetchall()
     return [row["detail"] for row in rows]
