@@ -130,10 +130,25 @@ class TaskStore:
             CREATE TABLE IF NOT EXISTS memory_search_terms (
               memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
               term TEXT NOT NULL,
+              updated_at TEXT NOT NULL DEFAULT '',
               PRIMARY KEY(memory_id, term)
             );
             CREATE INDEX IF NOT EXISTS idx_memory_search_terms_term
               ON memory_search_terms(term, memory_id);
+            term_columns = con.execute("PRAGMA table_info(memory_search_terms)").fetchall()
+            if not any(row["name"] == "updated_at" for row in term_columns):
+                con.execute(
+                    "ALTER TABLE memory_search_terms ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''"
+                )
+                con.execute(
+                    "UPDATE memory_search_terms SET updated_at=("
+                    "SELECT memories.updated_at FROM memories "
+                    "WHERE memories.id=memory_search_terms.memory_id)"
+                )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_search_terms_term_updated "
+                "ON memory_search_terms(term, updated_at DESC, memory_id DESC)"
+            )
             CREATE INDEX IF NOT EXISTS idx_memories_source_id
               ON memories(source, id);
             CREATE TABLE IF NOT EXISTS memory_search_index_meta (
@@ -192,7 +207,7 @@ class TaskStore:
             if index_version is None or index_version["version"] < 1:
                 con.execute("DELETE FROM memory_search_terms")
                 memory_rows = con.execute(
-                    "SELECT id, category, content, tags_json FROM memories"
+                    "SELECT id, category, content, tags_json, updated_at FROM memories"
                 ).fetchall()
                 for memory in memory_rows:
                     tags = json.loads(memory["tags_json"])
@@ -200,8 +215,8 @@ class TaskStore:
                         memory["category"], memory["content"], *tags
                     )
                     con.executemany(
-                        "INSERT OR IGNORE INTO memory_search_terms(memory_id, term) VALUES(?, ?)",
-                        [(memory["id"], token) for token in tokens],
+                        "INSERT OR IGNORE INTO memory_search_terms(memory_id, term, updated_at) VALUES(?, ?, ?)",
+                        [(memory["id"], token, memory["updated_at"]) for token in tokens],
                     )
                 con.execute("DELETE FROM memory_search_index_meta")
                 con.execute("INSERT INTO memory_search_index_meta(version) VALUES(1)")
@@ -767,8 +782,8 @@ class TaskStore:
             )
             tokens = _memory_search_tokens(clean_category, clean_content, *clean_tags)
             con.executemany(
-                "INSERT INTO memory_search_terms(memory_id, term) VALUES(?, ?)",
-                [(memory_id, token) for token in tokens],
+                "INSERT INTO memory_search_terms(memory_id, term, updated_at) VALUES(?, ?, ?)",
+                [(memory_id, token, now) for token in tokens],
             )
         return self.get_memory(memory_id)  # type: ignore[return-value]
 
@@ -802,11 +817,12 @@ class TaskStore:
                 raise ValueError("tags must be a list of non-blank strings")
             clean_tags = [tag.strip() for tag in clean_tags]
 
+            updated_at = utc_now()
             con.execute("DELETE FROM memory_search_terms WHERE memory_id=?", (memory_id,))
             tokens = _memory_search_tokens(clean_category, clean_content, *clean_tags)
             con.executemany(
-                "INSERT INTO memory_search_terms(memory_id, term) VALUES(?, ?)",
-                [(memory_id, token) for token in tokens],
+                "INSERT INTO memory_search_terms(memory_id, term, updated_at) VALUES(?, ?, ?)",
+                [(memory_id, token, updated_at) for token in tokens],
             )
             con.execute(
                 "UPDATE memories SET category=?, content=?, tags_json=?, updated_at=? WHERE id=?",
@@ -814,7 +830,7 @@ class TaskStore:
                     clean_category,
                     clean_content,
                     json.dumps(clean_tags, ensure_ascii=False),
-                    utc_now(),
+                    updated_at,
                     memory_id,
                 ),
             )
