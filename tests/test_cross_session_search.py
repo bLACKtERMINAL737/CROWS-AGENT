@@ -67,3 +67,79 @@ def test_cross_session_search_rejects_non_positive_limits(tmp_path):
 
     assert store.search_session_messages("searchable", limit=0) == []
     assert store.search_session_messages("searchable", limit=-1) == []
+
+
+def test_cross_session_search_indexes_existing_messages_once(tmp_path):
+    db_path = tmp_path / "legacy-cross-session-search.sqlite3"
+    store = TaskStore(db_path)
+    session = store.create_session("Legacy")
+    message = store.add_session_message(session["id"], "user", "Legacy Straße archive")
+    with store.connect() as con:
+        con.execute("DELETE FROM session_message_search_terms")
+        con.execute("DELETE FROM session_message_search_index_meta")
+    migrated = TaskStore(db_path)
+    assert migrated.search_session_messages("STRASSE") [0]["id"] == message["id"]
+    with migrated.connect() as con:
+        count = con.execute(
+            "SELECT COUNT(*) FROM session_message_search_terms WHERE message_id=?",
+            (message["id"],),
+        ).fetchone()[0]
+        version = con.execute(
+            "SELECT version FROM session_message_search_index_meta"
+        ).fetchone()[0]
+    assert count > 0
+    assert version == 1
+
+
+def test_cross_session_search_indexes_single_messages_and_atomic_turns(tmp_path):
+    store = TaskStore(tmp_path / "indexed-writes.sqlite3")
+    session = store.create_session("Writes")
+    single = store.add_session_message(session["id"], "user", "Crows deployment marker")
+    turn = store.add_session_turn(
+        session["id"], "Remember the workflow marker", "Workflow marker saved"
+    )
+    assert store.search_session_messages("deployment") [0]["id"] == single["id"]
+    assert {item["id"] for item in store.search_session_messages("workflow")} == {
+        turn[0]["id"], turn[1]["id"]
+    }
+
+
+def test_cross_session_search_index_cascades_on_session_delete(tmp_path):
+    store = TaskStore(tmp_path / "indexed-delete.sqlite3")
+    session = store.create_session("Delete")
+    message = store.add_session_message(session["id"], "user", "temporary indexed phrase")
+    assert store.delete_session(session["id"])
+    with store.connect() as con:
+        assert con.execute(
+            "SELECT 1 FROM session_message_search_terms WHERE message_id=?",
+            (message["id"],),
+        ).fetchone() is None
+
+
+def test_cross_session_search_uses_term_index_without_message_table_scan(tmp_path):
+    store = TaskStore(tmp_path / "indexed-query-plan.sqlite3")
+    session = store.create_session("Plan")
+    store.add_session_message(session["id"], "user", "query plan indexed target")
+    terms = sorted({"query", "plan"})
+    with store.connect() as con:
+        con.execute(
+            "CREATE TEMP TABLE query_session_message_terms "
+            "(term TEXT PRIMARY KEY) WITHOUT ROWID"
+        )
+        con.executemany(
+            "INSERT INTO query_session_message_terms(term) VALUES(?)",
+            [(term,) for term in terms],
+        )
+        plan = [
+            row["detail"] for row in con.execute(
+                "EXPLAIN QUERY PLAN SELECT indexed.message_id, COUNT(*) AS score "
+                "FROM session_message_search_terms AS indexed "
+                "JOIN query_session_message_terms AS query ON query.term=indexed.term "
+                "GROUP BY indexed.message_id"
+            )
+        ]
+    assert any(
+        "SEARCH indexed USING COVERING INDEX idx_session_message_search_terms_term" in item
+        for item in plan
+    )
+    assert not any("SCAN session_messages" in item for item in plan)
