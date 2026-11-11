@@ -43,3 +43,13 @@ LEFT JOIN candidate_scores ON candidate_scores.memory_id=m.id
 ORDER BY search_score DESC, m.updated_at DESC, m.id DESC
 LIMIT ?
 """
+
+
+MEMORY_SEARCH_SINGLE_TERM_SQL = """
+SELECT m.*, 1 AS search_score
+FROM memory_search_terms AS indexed
+JOIN memories AS m ON m.id=indexed.memory_id
+WHERE indexed.term=(SELECT term FROM query_memory_terms LIMIT 1)
+ORDER BY indexed.updated_at DESC, indexed.memory_id DESC
+LIMIT ?
+"""
