@@ -20,7 +20,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from crows.memory_search import MEMORY_SEARCH_SQL
+from crows.memory_search import MEMORY_SEARCH_RECALL_SQL, MEMORY_SEARCH_SQL
 from crows.store import TaskStore, _memory_search_tokens
 
 
@@ -29,6 +29,7 @@ WORKLOADS = {
     "common_term": ("common", "common"),
     "multi_term": ("multi_alpha multi_beta", "multi"),
     "no_match": ("CROWS_BENCHMARK_ABSENT", "none"),
+    "recall_intent": ("What code did I ask you to remember?", "recall"),
 }
 
 
@@ -39,6 +40,10 @@ def percentile(values: list[float], fraction: float) -> float:
 
 
 def content_for(index: int, workload: str) -> str:
+    if workload == "recall":
+        return "CROWS_RECALL_INTENT_SECRET_7319" if index == 0 else (
+            f"Unrelated archive note number {index} with routine project details"
+        )
     if workload == "rare":
         return "CROWS_BENCHMARK_NEEDLE unique searchable target" if index == 0 else (
             f"Unrelated archive note number {index} with routine project details"
@@ -68,7 +73,8 @@ def seed_store(store: TaskStore, memory_count: int, workload: str) -> str | None
     for index in range(memory_count):
         memory_id = target_id if index == 0 else str(uuid.UUID(int=index + 1))
         content = content_for(index, workload)
-        memories.append((memory_id, "benchmark", content, "benchmark", "[]", now, now))
+        source = "explicit_chat_request" if workload == "recall" and index == 0 else "benchmark"
+        memories.append((memory_id, "benchmark", content, source, "[]", now, now))
         terms.extend(
             (memory_id, token)
             for token in _memory_search_tokens("benchmark", content)
@@ -84,7 +90,7 @@ def seed_store(store: TaskStore, memory_count: int, workload: str) -> str | None
             "INSERT INTO memory_search_terms(memory_id,term) VALUES(?,?)",
             terms,
         )
-    return target_id if workload in {"rare", "multi"} else None
+    return target_id if workload in {"rare", "multi", "recall"} else None
 
 
 def verify_results(
@@ -97,12 +103,14 @@ def verify_results(
         return len(results) == min(5, expected_count) and all(
             "common" in _memory_search_tokens(item["content"]) for item in results
         )
-    if workload == "multi":
+    if workload in {"multi", "recall"}:
         return bool(results) and results[0]["id"] == target_id
     return results == []
 
 
-def explain_production_query(store: TaskStore, query: str) -> list[str]:
+def explain_production_query(
+    store: TaskStore, query: str, recall_intent: bool = False
+) -> list[str]:
     query_terms = sorted(_memory_search_tokens(query))
     with store.connect() as con:
         con.execute(
@@ -113,7 +121,8 @@ def explain_production_query(store: TaskStore, query: str) -> list[str]:
             [(term,) for term in query_terms],
         )
         rows = con.execute(
-            "EXPLAIN QUERY PLAN " + MEMORY_SEARCH_SQL,
+            "EXPLAIN QUERY PLAN "
+            + (MEMORY_SEARCH_RECALL_SQL if recall_intent else MEMORY_SEARCH_SQL),
             (5,),
         ).fetchall()
     return [row["detail"] for row in rows]
@@ -125,16 +134,22 @@ def benchmark_workload(
     with tempfile.TemporaryDirectory(prefix="crows-memory-bench-") as temp_dir:
         store = TaskStore(Path(temp_dir) / "benchmark.sqlite3")
         target_id = seed_store(store, memory_count, workload)
-        query_plan = explain_production_query(store, query)
+        recall_intent = workload == "recall"
+        query_plan = explain_production_query(store, query, recall_intent=recall_intent)
         index_used = any(
             "SEARCH indexed USING COVERING INDEX idx_memory_search_terms_term" in detail
             for detail in query_plan
         )
         full_scan_avoided = not any(detail == "SCAN memories" for detail in query_plan)
-        if not index_used or not full_scan_avoided:
+        source_index_used = any(
+            "SEARCH memories USING COVERING INDEX idx_memories_source_id" in detail
+            for detail in query_plan
+        )
+        if not index_used or not full_scan_avoided or (recall_intent and not source_index_used):
             raise RuntimeError(
                 f"Production query plan regression for {workload_name} "
-                f"(term_index_used={index_used}, full_scan_avoided={full_scan_avoided}): "
+                f"(term_index_used={index_used}, source_index_used={source_index_used}, "
+                f"full_scan_avoided={full_scan_avoided}): "
                 + "; ".join(query_plan)
             )
 
@@ -168,6 +183,7 @@ def benchmark_workload(
             "result_verified": True,
             "production_query_term_index_used": index_used,
             "full_memories_scan_avoided": full_scan_avoided,
+            "recall_source_index_used": source_index_used if recall_intent else None,
             "query_plan": query_plan,
         }
 
