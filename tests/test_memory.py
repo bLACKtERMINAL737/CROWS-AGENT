@@ -541,3 +541,35 @@ def test_memory_recall_intent_keeps_explicit_memory_candidates(tmp_path):
 
     assert results
     assert results[0]["id"] == saved["id"]
+
+
+
+def test_memory_recall_intent_uses_explicit_source_index(tmp_path):
+    from crows.memory_search import MEMORY_SEARCH_RECALL_SQL
+
+    store = TaskStore(tmp_path / "memory-recall-query-plan.sqlite3")
+    store.add_memory(
+        "note",
+        "CROWS_RECALL_INDEX_MARKER_7319",
+        source="explicit_chat_request",
+    )
+
+    with store.connect() as con:
+        con.execute(
+            "CREATE TEMP TABLE query_memory_terms(term TEXT PRIMARY KEY) WITHOUT ROWID"
+        )
+        con.execute(
+            "INSERT INTO query_memory_terms(term) VALUES(?)",
+            ("crows_recall_index_marker_7319",),
+        )
+        plan = con.execute(
+            "EXPLAIN QUERY PLAN " + MEMORY_SEARCH_RECALL_SQL,
+            (5,),
+        ).fetchall()
+
+    details = [row["detail"] for row in plan]
+    assert any(
+        "SEARCH memories USING COVERING INDEX idx_memories_source_id (source=?)" in detail
+        for detail in details
+    ), details
+    assert not any(detail == "SCAN memories" for detail in details), details
