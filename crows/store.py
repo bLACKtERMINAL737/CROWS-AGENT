@@ -134,6 +134,8 @@ class TaskStore:
             );
             CREATE INDEX IF NOT EXISTS idx_memory_search_terms_term
               ON memory_search_terms(term, memory_id);
+            CREATE INDEX IF NOT EXISTS idx_memories_source_id
+              ON memories(source, id);
             CREATE TABLE IF NOT EXISTS memory_search_index_meta (
               version INTEGER NOT NULL
             );
