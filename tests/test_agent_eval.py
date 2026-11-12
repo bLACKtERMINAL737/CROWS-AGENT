@@ -536,3 +536,69 @@ def test_response_metadata_keeps_valid_route_without_inventing_cost():
         "fallback_used": False, "attempts": 1,
     }
     assert "cost" not in metadata
+
+
+
+@pytest.mark.parametrize("tool_calls", ["many", -1, True, 1.5, {}])
+def test_run_case_rejects_invalid_tool_call_count_without_crashing(monkeypatch, tool_calls):
+    monkeypatch.setattr(
+        agent_eval,
+        "_request_json",
+        lambda *_a, **_kw: {"answer": "Done.", "task_id": None, "tool_calls": tool_calls},
+    )
+
+    result = agent_eval.run_case(
+        {"name": "invalid tool count", "message": "Do a task"},
+        base_url="http://127.0.0.1:8000",
+        token="test-token",
+        timeout=1,
+    )
+
+    assert result["passed"] is False
+    assert result["tool_calls"] == 0
+    assert "invalid_tool_call_count" in result["checks_failed"]
+
+
+@pytest.mark.parametrize("task_id", [123, {}, "", " " , "x" * 257])
+def test_run_case_rejects_invalid_task_id_without_requesting_journal(monkeypatch, task_id):
+    calls = []
+
+    def fake_request(url, **_kwargs):
+        calls.append(url)
+        return {"answer": "Done.", "task_id": task_id, "tool_calls": 0}
+
+    monkeypatch.setattr(agent_eval, "_request_json", fake_request)
+    result = agent_eval.run_case(
+        {"name": "invalid task id", "message": "Do a task"},
+        base_url="http://127.0.0.1:8000",
+        token="test-token",
+        timeout=1,
+    )
+
+    assert result["passed"] is False
+    assert "invalid_task_id" in result["checks_failed"]
+    assert len(calls) == 1
+    assert "task_id" not in json.dumps(result)
+
+
+def test_run_case_url_encodes_task_id_as_one_path_segment(monkeypatch):
+    requested_urls = []
+    responses = iter([
+        {"answer": "Done.", "task_id": "task/with?reserved", "tool_calls": 0},
+        {"status": "succeeded", "tool_executions": []},
+    ])
+
+    def fake_request(url, **_kwargs):
+        requested_urls.append(url)
+        return next(responses)
+
+    monkeypatch.setattr(agent_eval, "_request_json", fake_request)
+    result = agent_eval.run_case(
+        {"name": "encoded task id", "message": "Do a task"},
+        base_url="http://127.0.0.1:8000",
+        token="test-token",
+        timeout=1,
+    )
+
+    assert result["passed"] is True
+    assert requested_urls[1] == "http://127.0.0.1:8000/tasks/task%2Fwith%3Freserved"
