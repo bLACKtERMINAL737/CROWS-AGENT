@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import statistics
 import sys
 from pathlib import Path
@@ -51,6 +52,10 @@ def evaluate_gate(
     max_pass_rate_drop: float = 0.0,
     max_latency_increase_percent: float = 25.0,
 ) -> dict[str, Any]:
+    if not math.isfinite(max_pass_rate_drop) or not 0 <= max_pass_rate_drop <= 1:
+        raise ValueError("max_pass_rate_drop must be finite and between 0 and 1")
+    if not math.isfinite(max_latency_increase_percent) or max_latency_increase_percent < 0:
+        raise ValueError("max_latency_increase_percent must be finite and non-negative")
     if not baseline or not candidate:
         raise ValueError("Baseline and candidate reports must both contain cases")
     if set(baseline) != set(candidate):

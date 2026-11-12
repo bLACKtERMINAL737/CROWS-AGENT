@@ -104,3 +104,17 @@ def test_gate_report_excludes_case_level_content(tmp_path):
     assert "private-case-label" not in serialized
     assert "prompt" not in serialized
     assert "answer" not in serialized
+
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"max_pass_rate_drop": float("nan")},
+    {"max_pass_rate_drop": -0.1},
+    {"max_pass_rate_drop": 1.1},
+    {"max_latency_increase_percent": float("nan")},
+    {"max_latency_increase_percent": float("inf")},
+    {"max_latency_increase_percent": -1},
+])
+def test_gate_rejects_non_finite_or_out_of_range_thresholds(kwargs):
+    with pytest.raises(ValueError, match="must be"):
+        gate.evaluate_gate({"a": result()}, {"a": result()}, **kwargs)
