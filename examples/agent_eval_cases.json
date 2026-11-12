@@ -1,16 +1,16 @@
 [
   {
     "name": "basic answer",
-    "message": "Reply with the exact phrase AETHER_EVAL_READY and nothing else.",
+    "message": "Reply with the exact phrase CROWS_EVAL_READY and nothing else.",
     "expected_contains": [
-      "AETHER_EVAL_READY"
+      "CROWS_EVAL_READY"
     ]
   },
   {
     "name": "read known workspace file",
     "message": "Use workspace.read_file to read eval-fixtures/known_fact.txt and report the exact marker inside it. Do not guess if the file cannot be read.",
     "expected_contains": [
-      "AETHER_EVAL_MARKER_9241"
+      "CROWS_EVAL_MARKER_9241"
     ],
     "expected_tools": [
       "workspace.read_file"
@@ -29,7 +29,6 @@
     "min_tool_calls": 1,
     "expected_task_status": "failed",
     "expected_not_contains": [
-      "AETHER_EVAL_MARKER_9241",
       "CROWS_EVAL_MARKER_9241",
       "Northstar Demo"
     ]
