@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from urllib.parse import quote
 
 
 def load_cases(path: Path) -> list[dict[str, Any]]:
@@ -189,12 +190,24 @@ def run_case(
         forbidden = [item.casefold() for item in case.get("expected_not_contains", [])]
         if any(item in normalized_answer for item in forbidden):
             checks.append("forbidden_text_present")
-        tool_calls = int(response.get("tool_calls", 0) or 0)
-        task_id = response.get("task_id")
-        if task_id:
+        raw_tool_calls = response.get("tool_calls", 0)
+        if type(raw_tool_calls) is not int or raw_tool_calls < 0:
+            checks.append("invalid_tool_call_count")
+            tool_calls = 0
+        else:
+            tool_calls = raw_tool_calls
+        raw_task_id = response.get("task_id")
+        task_id = raw_task_id
+        if task_id is not None and (
+            not isinstance(task_id, str) or not task_id.strip() or len(task_id) > 256
+        ):
+            checks.append("invalid_task_id")
+            task_id = None
+        if task_id is not None:
             try:
+                task_url = base_url.rstrip("/") + "/tasks/" + quote(task_id, safe="")
                 task = _request_json(
-                    base_url.rstrip("/") + "/tasks/" + str(task_id),
+                    task_url,
                     token=token,
                     timeout=timeout,
                 )
@@ -235,7 +248,7 @@ def run_case(
             except RuntimeError:
                 task_status = "unavailable"
                 checks.append("task_journal_unavailable")
-        elif case.get("expected_tools") or case.get("min_tool_calls", 0):
+        elif raw_task_id is None and (case.get("expected_tools") or case.get("min_tool_calls", 0)):
             checks.append("task_id_missing")
         if len(tool_names) < case.get("min_tool_calls", 0):
             checks.append("tool_attempt_count_below_minimum")
