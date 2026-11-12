@@ -24,10 +24,27 @@ def result(name="lookup", *, passed=True, latency=100, mode="auto", route="prima
     }
 
 
+def nested_keys(value):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield key
+            yield from nested_keys(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from nested_keys(child)
+
+
 def test_compare_reports_aggregates_by_actual_mode_route_and_model(tmp_path):
     auto = tmp_path / "auto.json"
     manual = tmp_path / "manual.json"
-    write_report(auto, [result(latency=100), result("missing", passed=False, latency=300, fallback=True, attempts=2)])
+    write_report(auto, [
+        result(latency=100) | {
+            "prompt": "PRIVATE_PROMPT_SENTINEL",
+            "answer": "PRIVATE_ANSWER_SENTINEL",
+            "tool_arguments": {"token": "PRIVATE_TOOL_ARGUMENT_SENTINEL"},
+        },
+        result("missing", passed=False, latency=300, fallback=True, attempts=2),
+    ])
     write_report(manual, [result(mode="manual", route="coding", model="provider/code", latency=200)])
 
     report = compare.compare_reports([("auto-run", auto), ("manual-run", manual)])
@@ -42,8 +59,11 @@ def test_compare_reports_aggregates_by_actual_mode_route_and_model(tmp_path):
     assert primary["fallback_observations"] == 2
     assert primary["fallback_count"] == 1
     assert primary["attempts_mean"] == 1.5
-    assert "prompt" not in json.dumps(report)
-    assert "answer" not in json.dumps(report)
+    serialized = json.dumps(report)
+    assert "PRIVATE_PROMPT_SENTINEL" not in serialized
+    assert "PRIVATE_ANSWER_SENTINEL" not in serialized
+    assert "PRIVATE_TOOL_ARGUMENT_SENTINEL" not in serialized
+    assert not {"prompt", "answer", "tool_arguments"}.intersection(nested_keys(report))
 
 
 def test_compare_omits_rates_when_metadata_was_not_reported(tmp_path):
