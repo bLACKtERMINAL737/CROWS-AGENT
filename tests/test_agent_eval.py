@@ -578,7 +578,12 @@ def test_run_case_rejects_invalid_task_id_without_requesting_journal(monkeypatch
     assert result["passed"] is False
     assert "invalid_task_id" in result["checks_failed"]
     assert len(calls) == 1
-    assert "task_id" not in json.dumps(result)
+    serialized_result = json.dumps(result)
+    assert "task_id" not in result
+    if isinstance(task_id, str) and task_id.strip():
+        assert task_id not in serialized_result
+    elif isinstance(task_id, int):
+        assert str(task_id) not in serialized_result
 
 
 def test_run_case_url_encodes_task_id_as_one_path_segment(monkeypatch):
