@@ -145,7 +145,7 @@ def main() -> int:
             max_latency_increase_percent=args.max_latency_increase_percent,
         )
         args.output.write_text(
-            json.dumps(report, indent=2, ensure_ascii=False) + "\\n", encoding="utf-8"
+            json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
         )
     except (OSError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
