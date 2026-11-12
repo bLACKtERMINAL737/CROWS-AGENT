@@ -96,14 +96,23 @@ def test_gate_report_excludes_case_level_content(tmp_path):
     candidate_path = tmp_path / "candidate.json"
     write_report(baseline_path, {"private-case-label": result(True)})
     write_report(candidate_path, {"private-case-label": result(True)})
+    for path in (baseline_path, candidate_path):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["results"][0]["prompt"] = "PRIVATE_PROMPT_SENTINEL"
+        payload["results"][0]["answer"] = "PRIVATE_ANSWER_SENTINEL"
+        payload["results"][0]["tool_arguments"] = {"secret": "PRIVATE_TOOL_SENTINEL"}
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
     baseline = gate.load_results(baseline_path)
     candidate = gate.load_results(candidate_path)
     report = gate.evaluate_gate(baseline, candidate)
     serialized = json.dumps(report)
 
     assert "private-case-label" not in serialized
-    assert "prompt" not in serialized
-    assert "answer" not in serialized
+    assert "PRIVATE_PROMPT_SENTINEL" not in serialized
+    assert "PRIVATE_ANSWER_SENTINEL" not in serialized
+    assert "PRIVATE_TOOL_SENTINEL" not in serialized
+    # The privacy note may name excluded data categories; assert values, not words.
 
 
 
