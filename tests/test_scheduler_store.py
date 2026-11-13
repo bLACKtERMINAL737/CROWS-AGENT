@@ -508,3 +508,24 @@ def test_scheduler_metrics_separates_paused_overdue_from_actionable_overdue(tmp_
     assert metrics["paused_overdue_count"] == 1
     assert metrics["overdue_scheduled_count"] == 1
     assert metrics["overdue_lateness_p50_seconds"] > 0
+
+
+def test_execution_history_uses_bounded_stable_pagination(tmp_path):
+    store = SchedulerStore(tmp_path / "history-pages.sqlite3")
+    item = store.create_schedule("History", "Run", "2026-01-01T00:00:00+00:00", "history-pages")
+    for index in range(1, 6):
+        with store.connect() as con:
+            con.execute(
+                "INSERT INTO schedule_execution_history "
+                "(id,schedule_id,occurrence_number,status,scheduled_for,finished_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (f"history-{index}", item["id"], index, "completed",
+                 f"2026-01-0{index}T00:00:00+00:00", f"2026-01-0{index}T00:01:00+00:00"),
+            )
+    first = store.list_execution_history(item["id"], limit=2)
+    second = store.list_execution_history(item["id"], limit=2, offset=2)
+    assert [row["occurrence_number"] for row in first] == [1, 2]
+    assert [row["occurrence_number"] for row in second] == [3, 4]
+    assert store.list_execution_history(item["id"], limit=2, offset=4)[0]["occurrence_number"] == 5
+    with pytest.raises(ValueError, match="limit or offset"):
+        store.list_execution_history(item["id"], limit=201)

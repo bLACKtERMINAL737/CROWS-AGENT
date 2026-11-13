@@ -320,7 +320,11 @@ class SchedulerStore:
             ).fetchone()
             return dict(saved)
 
-    def list_retry_audit(self, schedule_id: str) -> list[dict[str, Any]]:
+    def list_retry_audit(
+        self, schedule_id: str, *, limit: int = 50, offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        if not 1 <= limit <= 200 or not 0 <= offset <= 1_000_000:
+            raise ValueError("limit or offset is outside its allowed range")
         with self.connect() as con:
             if con.execute(
                 "SELECT 1 FROM scheduled_tasks WHERE id=?", (schedule_id,)
@@ -329,8 +333,8 @@ class SchedulerStore:
             rows = con.execute(
                 "SELECT id,schedule_id,previous_task_id,reason,requested_run_at,"
                 "retry_number,created_at FROM schedule_retry_audit "
-                "WHERE schedule_id=? ORDER BY created_at,id",
-                (schedule_id,),
+                "WHERE schedule_id=? ORDER BY created_at,id LIMIT ? OFFSET ?",
+                (schedule_id, limit, offset),
             ).fetchall()
             return [dict(row) for row in rows]
 
@@ -449,14 +453,19 @@ class SchedulerStore:
                 )
             return cursor.rowcount == 1
 
-    def list_execution_history(self, schedule_id: str) -> list[dict[str, Any]]:
+    def list_execution_history(
+        self, schedule_id: str, *, limit: int = 50, offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        if not 1 <= limit <= 200 or not 0 <= offset <= 1_000_000:
+            raise ValueError("limit or offset is outside its allowed range")
         with self.connect() as con:
             if con.execute("SELECT 1 FROM scheduled_tasks WHERE id=?", (schedule_id,)).fetchone() is None:
                 raise KeyError("Schedule not found")
             rows = con.execute(
                 "SELECT occurrence_number,task_id,status,scheduled_for,finished_at,"
                 "result_json,error_text FROM schedule_execution_history "
-                "WHERE schedule_id=? ORDER BY occurrence_number", (schedule_id,)
+                "WHERE schedule_id=? ORDER BY occurrence_number LIMIT ? OFFSET ?",
+                (schedule_id, limit, offset),
             ).fetchall()
             return [dict(row) for row in rows]
 
@@ -484,14 +493,18 @@ class SchedulerStore:
             ).fetchone()
             return dict(saved)
 
-    def list_reconciliation_audit(self, schedule_id: str) -> list[dict[str, Any]]:
+    def list_reconciliation_audit(
+        self, schedule_id: str, *, limit: int = 50, offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        if not 1 <= limit <= 200 or not 0 <= offset <= 1_000_000:
+            raise ValueError("limit or offset is outside its allowed range")
         with self.connect() as con:
             if con.execute("SELECT 1 FROM scheduled_tasks WHERE id=?", (schedule_id,)).fetchone() is None:
                 raise KeyError("Schedule not found")
             rows = con.execute(
                 "SELECT id,schedule_id,note,evidence,created_at "
-                "FROM schedule_reconciliation_audit WHERE schedule_id=? ORDER BY created_at,id",
-                (schedule_id,),
+                "FROM schedule_reconciliation_audit WHERE schedule_id=? ORDER BY created_at,id LIMIT ? OFFSET ?",
+                (schedule_id, limit, offset),
             ).fetchall()
             return [dict(row) for row in rows]
 

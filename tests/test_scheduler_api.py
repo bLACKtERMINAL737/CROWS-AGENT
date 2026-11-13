@@ -306,3 +306,18 @@ def test_scheduler_list_filters(monkeypatch, tmp_path):
     assert {x["id"] for x in pending.json()["schedules"]} == {second["id"]}
     invalid = client.get("/scheduler/schedules?status=not-real", headers=auth())
     assert invalid.status_code == 400
+
+
+def test_scheduler_audit_endpoints_support_bounded_pagination(monkeypatch, tmp_path):
+    client = make_client(monkeypatch, tmp_path)
+    created = client.post("/scheduler/schedules", json=payload(), headers=auth())
+    schedule_id = created.json()["id"]
+    assert client.get(
+        f"/scheduler/schedules/{schedule_id}/execution-history?limit=201", headers=auth()
+    ).status_code == 400
+    assert client.get(
+        f"/scheduler/schedules/{schedule_id}/retry-audit?offset=-1", headers=auth()
+    ).status_code == 400
+    assert client.get(
+        f"/scheduler/schedules/{schedule_id}/audit?limit=1&offset=0", headers=auth()
+    ).status_code == 200
