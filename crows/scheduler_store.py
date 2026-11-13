@@ -240,15 +240,51 @@ class SchedulerStore:
             oldest_unknown = con.execute(
                 "SELECT MIN(updated_at) AS value FROM scheduled_tasks WHERE status='unknown'"
             ).fetchone()["value"]
+            now = datetime.now(timezone.utc)
+            lease_health = con.execute(
+                "SELECT "
+                "SUM(CASE WHEN lease_expires_at IS NOT NULL AND lease_expires_at<=? "
+                "THEN 1 ELSE 0 END) AS expired, "
+                "SUM(CASE WHEN lease_expires_at>? AND lease_expires_at<=? "
+                "THEN 1 ELSE 0 END) AS expiring "
+                "FROM scheduled_tasks WHERE status='running'",
+                (now.isoformat(), now.isoformat(),
+                 (now + timedelta(seconds=60)).isoformat()),
+            ).fetchone()
+            scheduled_rows = con.execute(
+                "SELECT run_at FROM scheduled_tasks WHERE status='scheduled' AND run_at<=?",
+                (now.isoformat(),),
+            ).fetchall()
+            running_rows = con.execute(
+                "SELECT updated_at FROM scheduled_tasks WHERE status='running'"
+            ).fetchall()
             total = con.execute("SELECT COUNT(*) AS count FROM scheduled_tasks").fetchone()["count"]
         counts = {status: 0 for status in sorted(SCHEDULE_STATUSES)}
         counts.update({row["status"]: row["count"] for row in rows})
+        lateness = sorted(
+            max(0, int((now - datetime.fromisoformat(row["run_at"])).total_seconds()))
+            for row in scheduled_rows
+        )
+        running_age = sorted(
+            max(0, int((now - datetime.fromisoformat(row["updated_at"])).total_seconds()))
+            for row in running_rows
+        )
         return {
             "total": total,
             "by_status": counts,
             "oldest_scheduled_run_at": oldest_scheduled,
             "oldest_running_updated_at": oldest_running,
             "oldest_unknown_updated_at": oldest_unknown,
+            "overdue_scheduled_count": len(lateness),
+            "overdue_lateness_p50_seconds": (
+                lateness[max(0, (len(lateness) + 1) // 2 - 1)] if lateness else 0
+            ),
+            "overdue_lateness_p95_seconds": (
+                lateness[max(0, (len(lateness) * 95 + 99) // 100 - 1)] if lateness else 0
+            ),
+            "oldest_running_age_seconds": running_age[-1] if running_age else 0,
+            "running_with_expired_lease_count": int(lease_health["expired"] or 0),
+            "leases_expiring_within_60_seconds": int(lease_health["expiring"] or 0),
         }
 
     def mark_expired_claims_unknown(self, *, now: str | datetime | None = None) -> int:
