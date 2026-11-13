@@ -2990,6 +2990,7 @@ def _public_schedule(schedule: dict[str, Any]) -> dict[str, Any]:
             "id", "title", "input_text", "run_at", "status",
             "created_at", "updated_at", "task_id", "result_json", "error_text",
             "retry_count", "recurrence_interval_seconds", "max_occurrences",
+            "occurrence_count", "is_paused",
             "occurrence_count",
         )
     }
@@ -3021,6 +3022,28 @@ def reschedule_schedule(schedule_id: str, request: ScheduleRescheduleRequest):
             status_code=409,
             detail="Only pending schedules can be rescheduled",
         )
+    return _public_schedule(saved)
+
+
+@app.post("/scheduler/schedules/{schedule_id}/pause")
+def pause_schedule(schedule_id: str):
+    try:
+        saved = scheduler_store.pause_schedule(schedule_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Schedule not found") from exc
+    if saved is None:
+        raise HTTPException(status_code=409, detail="Only active pending schedules can be paused")
+    return _public_schedule(saved)
+
+
+@app.post("/scheduler/schedules/{schedule_id}/resume")
+def resume_schedule(schedule_id: str):
+    try:
+        saved = scheduler_store.resume_schedule(schedule_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Schedule not found") from exc
+    if saved is None:
+        raise HTTPException(status_code=409, detail="Only paused pending schedules can be resumed")
     return _public_schedule(saved)
 
 

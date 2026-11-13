@@ -272,3 +272,21 @@ def test_recurring_schedule_api_rejects_partial_or_unbounded_configuration(monke
     too_many = client.post("/scheduler/schedules",
         json=payload(recurrence_interval_seconds=3600, max_occurrences=1001), headers=auth())
     assert too_many.status_code == 422
+
+
+def test_schedule_pause_resume_api(monkeypatch, tmp_path):
+    client = make_client(monkeypatch, tmp_path)
+    created = client.post("/scheduler/schedules", json=payload(), headers=auth())
+    assert created.status_code == 201
+    schedule_id = created.json()["id"]
+    paused = client.post(f"/scheduler/schedules/{schedule_id}/pause", headers=auth())
+    assert paused.status_code == 200 and paused.json()["is_paused"] == 1
+    resumed = client.post(f"/scheduler/schedules/{schedule_id}/resume", headers=auth())
+    assert resumed.status_code == 200 and resumed.json()["is_paused"] == 0
+    assert client.post(f"/scheduler/schedules/{schedule_id}/resume", headers=auth()).status_code == 409
+
+
+def test_schedule_pause_resume_api_reports_missing_schedule(monkeypatch, tmp_path):
+    client = make_client(monkeypatch, tmp_path)
+    assert client.post("/scheduler/schedules/missing/pause", headers=auth()).status_code == 404
+    assert client.post("/scheduler/schedules/missing/resume", headers=auth()).status_code == 404

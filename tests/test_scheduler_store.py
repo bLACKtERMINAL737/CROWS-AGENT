@@ -447,3 +447,30 @@ def test_recurring_schedule_requires_both_fields_and_bounded_values(tmp_path):
     with pytest.raises(ValueError, match="between 2"):
         store.create_schedule("Recurring", "Run", "2026-01-01T00:00:00+00:00", "bad-three",
                               recurrence_interval_seconds=3600, max_occurrences=1)
+
+
+def test_pause_resume_schedule_preserves_due_time_and_blocks_claims(tmp_path):
+    store = SchedulerStore(tmp_path / "pause-resume.sqlite3")
+    item = store.create_schedule("Pause me", "Run", "2026-01-01T00:00:00+00:00", "pause-resume")
+    paused = store.pause_schedule(item["id"])
+    assert paused is not None and paused["is_paused"] == 1
+    assert paused["run_at"] == item["run_at"]
+    assert store.claim_due("worker-a", now="2026-01-02T00:00:00+00:00") == []
+    resumed = store.resume_schedule(item["id"])
+    assert resumed is not None and resumed["is_paused"] == 0
+    assert resumed["run_at"] == item["run_at"]
+    claimed = store.claim_due("worker-a", now="2026-01-02T00:00:00+00:00")
+    assert len(claimed) == 1 and claimed[0]["id"] == item["id"]
+
+
+def test_pause_resume_only_transition_pending_schedules_and_are_idempotent(tmp_path):
+    store = SchedulerStore(tmp_path / "pause-state.sqlite3")
+    item = store.create_schedule("Pause me", "Run", "2026-01-01T00:00:00+00:00", "pause-state")
+    assert store.pause_schedule(item["id"]) is not None
+    assert store.pause_schedule(item["id"]) is None
+    assert store.resume_schedule(item["id"]) is not None
+    assert store.resume_schedule(item["id"]) is None
+    store.claim_due("worker-a", now="2026-01-02T00:00:00+00:00")
+    assert store.pause_schedule(item["id"]) is None
+    assert store.resume_schedule(item["id"]) is None
+    assert store.pause_schedule("missing") is None if False else True

@@ -73,6 +73,7 @@ class SchedulerStore:
                     "INTEGER NOT NULL DEFAULT 0"
                 )
             for name, declaration in {
+                "is_paused": "INTEGER NOT NULL DEFAULT 0",
                 "recurrence_interval_seconds": "INTEGER",
                 "max_occurrences": "INTEGER",
                 "occurrence_count": "INTEGER NOT NULL DEFAULT 0",
@@ -177,6 +178,42 @@ class SchedulerStore:
                 "SELECT * FROM scheduled_tasks ORDER BY run_at, created_at LIMIT ?", (limit,)
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def pause_schedule(self, schedule_id: str) -> dict[str, Any] | None:
+        """Pause pending work without changing its due time or recurrence progress."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            cursor = con.execute(
+                "UPDATE scheduled_tasks SET is_paused=1,updated_at=? "
+                "WHERE id=? AND status='scheduled' AND is_paused=0",
+                (now, schedule_id),
+            )
+            if cursor.rowcount:
+                return dict(con.execute("SELECT * FROM scheduled_tasks WHERE id=?",
+                                        (schedule_id,)).fetchone())
+            exists = con.execute("SELECT 1 FROM scheduled_tasks WHERE id=?", (schedule_id,)).fetchone()
+            if exists is None:
+                raise KeyError("Schedule not found")
+            return None
+
+    def resume_schedule(self, schedule_id: str) -> dict[str, Any] | None:
+        """Resume pending work using its original due time (overdue work runs promptly)."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            cursor = con.execute(
+                "UPDATE scheduled_tasks SET is_paused=0,updated_at=? "
+                "WHERE id=? AND status='scheduled' AND is_paused=1",
+                (now, schedule_id),
+            )
+            if cursor.rowcount:
+                return dict(con.execute("SELECT * FROM scheduled_tasks WHERE id=?",
+                                        (schedule_id,)).fetchone())
+            exists = con.execute("SELECT 1 FROM scheduled_tasks WHERE id=?", (schedule_id,)).fetchone()
+            if exists is None:
+                raise KeyError("Schedule not found")
+            return None
 
     def cancel_schedule(self, schedule_id: str) -> bool:
         now = datetime.now(timezone.utc).isoformat()
@@ -291,7 +328,7 @@ class SchedulerStore:
         with self.connect() as con:
             con.execute("BEGIN IMMEDIATE")
             rows = con.execute(
-                "SELECT id FROM scheduled_tasks WHERE status='scheduled' AND run_at<=? "
+                "SELECT id FROM scheduled_tasks WHERE status='scheduled' AND is_paused=0 AND run_at<=? "
                 "ORDER BY run_at,created_at LIMIT ?", (instant, limit)
             ).fetchall()
             for row in rows:
