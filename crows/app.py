@@ -122,6 +122,10 @@ async def lifespan(app: FastAPI):
         if get_env("CROWS_SCHEDULER_WORKER_ENABLED", "").lower() == "true":
             scheduler_task = asyncio.create_task(scheduler_worker_loop())
             logger.info("Scheduler worker started")
+        agent_task_worker = None
+        if get_env("CROWS_AGENT_WORKER_ENABLED", "").lower() == "true":
+            agent_task_worker = asyncio.create_task(agent_task_worker_loop())
+            logger.info("Durable agent task worker started")
         try:
             yield
         finally:
@@ -146,6 +150,13 @@ async def lifespan(app: FastAPI):
                 except asyncio.CancelledError:
                     pass
                 logger.info("Scheduler worker stopped")
+            if agent_task_worker is not None:
+                agent_task_worker.cancel()
+                try:
+                    await agent_task_worker
+                except asyncio.CancelledError:
+                    pass
+                logger.info("Durable agent task worker stopped")
 
 
 app = FastAPI(title="Crows API", version="0.4.0",
