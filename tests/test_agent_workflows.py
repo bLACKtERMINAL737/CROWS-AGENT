@@ -1123,7 +1123,7 @@ def test_workflow_listing_filters_creation_time_range(tmp_path, monkeypatch):
     )] == [first["id"]]
     assert [item["id"] for item in store.list_workflows(
         created_after=first_created, created_before=second_created
-    )] == [first["id"], second["id"]]
+    )] == [second["id"], first["id"]]
     with pytest.raises(ValueError, match="must include a timezone"):
         store.list_workflows(created_after="2026-01-01T00:00:00")
     with pytest.raises(ValueError, match="must not be later"):
