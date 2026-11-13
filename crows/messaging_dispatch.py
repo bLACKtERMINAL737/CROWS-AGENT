@@ -47,6 +47,9 @@ class InboundDispatchStore:
                 CREATE INDEX IF NOT EXISTS idx_inbound_dispatch_session
                     ON messaging_inbound_dispatch(channel, conversation_id, created_at);
             """)
+            columns = {row["name"] for row in con.execute("PRAGMA table_info(messaging_inbound_dispatch)")}
+            if "reply_text" not in columns:
+                con.execute("ALTER TABLE messaging_inbound_dispatch ADD COLUMN reply_text TEXT")
 
     def connect(self) -> sqlite3.Connection:
         con = sqlite3.connect(self.db_path, timeout=10)
@@ -136,6 +139,20 @@ class InboundDispatchStore:
                     claimed.append(dict(updated))
         return claimed
 
+    def save_reply(self, dispatch_id: str, *, worker_id: str, reply_text: str) -> bool:
+        """Durably checkpoint a generated reply while the caller owns its lease."""
+        if not isinstance(reply_text, str) or not reply_text.strip() or len(reply_text) > 20000:
+            raise InboundDispatchError("reply_text must contain 1 to 20000 characters")
+        now = _now()
+        with self.connect() as con:
+            con.execute(
+                """UPDATE messaging_inbound_dispatch SET reply_text=?,updated_at=?
+                   WHERE id=? AND state='processing' AND lease_owner=? AND lease_until >= ?
+                     AND (reply_text IS NULL OR reply_text=?)""",
+                (reply_text.strip(), now, dispatch_id, worker_id, now, reply_text.strip()),
+            )
+            return con.execute("SELECT changes()").fetchone()[0] == 1
+
     def renew(self, dispatch_id: str, *, worker_id: str,
               lease_seconds: int = 120) -> bool:
         if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, int) or not 5 <= lease_seconds <= 900:
@@ -155,7 +172,7 @@ class InboundDispatchStore:
 
     def finish(self, dispatch_id: str, *, worker_id: str, state: str,
                diagnostic: str | None = None) -> bool:
-        if state not in {"completed", "failed", "unknown"}:
+        if state not in {"completed", "failed", "unknown", "pending"}:
             raise InboundDispatchError("terminal dispatch state is invalid")
         if diagnostic is not None:
             if not isinstance(diagnostic, str) or len(diagnostic) > 1000:
@@ -165,19 +182,20 @@ class InboundDispatchStore:
         with self.connect() as con:
             con.execute("BEGIN IMMEDIATE")
             row = con.execute(
-                """SELECT lease_owner,lease_until FROM messaging_inbound_dispatch
+                """SELECT lease_owner,lease_until,reply_text FROM messaging_inbound_dispatch
                    WHERE id=? AND state='processing'""",
                 (dispatch_id,),
             ).fetchone()
             if (row is None or row["lease_owner"] != worker_id
                     or not row["lease_until"] or row["lease_until"] < now):
                 return False
+            next_state = "pending" if state == "pending" and row["reply_text"] else state
             con.execute(
                 """UPDATE messaging_inbound_dispatch
                    SET state=?,lease_owner=NULL,lease_until=NULL,
                        diagnostic=?,updated_at=?
                    WHERE id=? AND state='processing' AND lease_owner=?""",
-                (state, diagnostic, now, dispatch_id, worker_id),
+                (next_state, diagnostic, now, dispatch_id, worker_id),
             )
             return con.execute("SELECT changes()").fetchone()[0] == 1
 
@@ -187,8 +205,11 @@ class InboundDispatchStore:
             con.execute("BEGIN IMMEDIATE")
             con.execute(
                 """UPDATE messaging_inbound_dispatch
-                   SET state='unknown',lease_owner=NULL,lease_until=NULL,
-                       diagnostic='Worker lease expired; inspect runtime and session state before retrying',
+                   SET state=CASE WHEN reply_text IS NOT NULL THEN 'pending' ELSE 'unknown' END,
+                       lease_owner=NULL,lease_until=NULL,
+                       diagnostic=CASE WHEN reply_text IS NOT NULL
+                           THEN 'Recovered a checkpointed reply; resume durable delivery without another model call'
+                           ELSE 'Worker lease expired before a reply was checkpointed; inspect before retrying' END,
                        updated_at=?
                    WHERE state='processing' AND lease_until < ?""",
                 (now, now),

@@ -78,3 +78,25 @@ def test_dispatch_metrics_omit_message_and_session_content(tmp_path):
         "id": route["id"], "channel": "telegram", "state": "pending",
         "attempts": 0, "created_at": route["created_at"], "updated_at": route["updated_at"],
     }]
+
+
+def test_expired_dispatch_with_checkpointed_reply_returns_to_pending(tmp_path):
+    dispatch, route = _queued(tmp_path)
+    dispatch.claim(worker_id="worker-a", limit=1)
+    assert dispatch.save_reply(route["id"], worker_id="worker-a", reply_text="saved reply")
+    with dispatch.connect() as con:
+        con.execute("UPDATE messaging_inbound_dispatch SET lease_until='2000-01-01T00:00:00+00:00' WHERE id=?", (route["id"],))
+    assert dispatch.expire_leases() == 1
+    recovered = dispatch.get(route["id"])
+    assert recovered["state"] == "pending" and recovered["reply_text"] == "saved reply"
+    reclaimed = dispatch.claim(worker_id="worker-b", limit=1)
+    assert len(reclaimed) == 1 and reclaimed[0]["reply_text"] == "saved reply"
+
+
+def test_expired_dispatch_without_reply_remains_unknown(tmp_path):
+    dispatch, route = _queued(tmp_path)
+    dispatch.claim(worker_id="worker-a", limit=1)
+    with dispatch.connect() as con:
+        con.execute("UPDATE messaging_inbound_dispatch SET lease_until='2000-01-01T00:00:00+00:00' WHERE id=?", (route["id"],))
+    assert dispatch.expire_leases() == 1
+    assert dispatch.get(route["id"])["state"] == "unknown"

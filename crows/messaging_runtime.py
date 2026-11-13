@@ -102,19 +102,26 @@ async def process_inbound_dispatch(
     )
     heartbeat = asyncio.create_task(_renew_lease(dispatches, dispatch_id, worker_id))
     try:
-        result = await router.chat(
-            prompt, task_type="general", history=history,
-            allow_fallback=True,
-        )
-        if heartbeat.done():
-            heartbeat.result()
-        answer = result.get("answer") if isinstance(result, dict) else None
-        if not isinstance(answer, str) or not answer.strip():
-            raise ValueError("The model returned an empty reply.")
-        answer = answer.strip()[:channel_policy.max_reply_chars]
+        answer = dispatch.get("reply_text")
+        if not answer:
+            result = await router.chat(
+                prompt, task_type="general", history=history,
+                allow_fallback=True,
+            )
+            if heartbeat.done():
+                heartbeat.result()
+            answer = result.get("answer") if isinstance(result, dict) else None
+            if not isinstance(answer, str) or not answer.strip():
+                raise ValueError("The model returned an empty reply.")
+            answer = answer.strip()[:channel_policy.max_reply_chars]
+            if not dispatches.save_reply(dispatch_id, worker_id=worker_id, reply_text=answer):
+                raise RuntimeError("Could not checkpoint the generated reply under the active lease")
+            dispatch["reply_text"] = answer
+        else:
+            answer = answer[:channel_policy.max_reply_chars]
         # Persist the completed turn before queueing delivery. The outbox uses a
         # deterministic idempotency key so an operator can safely reconcile retries.
-        sessions.add_session_turn(session_id, user_text, answer)
+        sessions.add_session_turn_once(dispatch_id, session_id, user_text, answer)
         queued = messages.queue_outbound(
             channel=channel, provider_user_id=f"dispatch:{dispatch_id}",
             text=answer, idempotency_key=f"inbound-reply:{dispatch_id}",
@@ -143,11 +150,17 @@ async def process_inbound_dispatch(
         return "failed"
     except Exception as exc:
         logger.exception("Inbound agent dispatch failed")
+        recovered = bool(dispatch.get("reply_text"))
         dispatches.finish(
-            dispatch_id, worker_id=worker_id, state="unknown",
-            diagnostic=f"Reply processing outcome requires inspection ({type(exc).__name__}).",
+            dispatch_id, worker_id=worker_id,
+            state="pending" if recovered else "unknown",
+            diagnostic=(
+                f"Checkpointed reply retained for delivery retry ({type(exc).__name__})."
+                if recovered else
+                f"Reply processing outcome requires inspection ({type(exc).__name__})."
+            ),
         )
-        return "unknown"
+        return "pending" if recovered else "unknown"
     finally:
         heartbeat.cancel()
         await asyncio.gather(heartbeat, return_exceptions=True)
