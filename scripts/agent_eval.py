@@ -242,18 +242,22 @@ def run_case(
                     token=token,
                     timeout=timeout,
                 )
-                raw_status = task.get("status", "unknown")
-                if not isinstance(raw_status, str) or raw_status not in {
+                raw_status = task.get("status")
+                if "status" not in task or not isinstance(raw_status, str) or raw_status not in {
                     "succeeded", "failed", "unknown", "not_created"
                 }:
                     task_status = "unknown"
                     checks.append("invalid_task_status")
                 else:
                     task_status = raw_status
-                executions = task.get("tool_executions", [])
-                if not isinstance(executions, list):
-                    checks.append("invalid_tool_execution_list")
+                if "tool_executions" not in task:
+                    checks.append("missing_tool_execution_list")
                     executions = []
+                else:
+                    executions = task["tool_executions"]
+                    if not isinstance(executions, list):
+                        checks.append("invalid_tool_execution_list")
+                        executions = []
                 for execution in executions:
                     if not isinstance(execution, dict):
                         checks.append("invalid_tool_execution")

@@ -808,3 +808,48 @@ def test_main_rejects_remote_http_before_sending_authorization(tmp_path, monkeyp
     assert exit_code == 2
     assert "Non-loopback API URLs must use HTTPS" in captured.err
     assert not (tmp_path / "report.json").exists()
+
+
+def test_run_case_rejects_task_journal_missing_status_even_when_unknown_expected(monkeypatch):
+    responses = iter([
+        {"answer": "Done.", "task_id": "task-missing-status", "tool_calls": 0},
+        {"tool_executions": []},
+    ])
+    monkeypatch.setattr(agent_eval, "_request_json", lambda *_a, **_kw: next(responses))
+
+    result = agent_eval.run_case(
+        {
+            "name": "missing journal status",
+            "message": "Do a task",
+            "expected_task_status": "unknown",
+        },
+        base_url="http://127.0.0.1:8000",
+        token="test-token",
+        timeout=1,
+    )
+
+    assert result["passed"] is False
+    assert "invalid_task_status" in result["checks_failed"]
+    assert "unexpected_task_status" in result["checks_failed"]
+
+
+def test_run_case_rejects_task_journal_missing_tool_execution_list(monkeypatch):
+    responses = iter([
+        {"answer": "Done.", "task_id": "task-missing-executions", "tool_calls": 0},
+        {"status": "succeeded"},
+    ])
+    monkeypatch.setattr(agent_eval, "_request_json", lambda *_a, **_kw: next(responses))
+
+    result = agent_eval.run_case(
+        {
+            "name": "missing tool execution list",
+            "message": "Do a task",
+            "expected_task_status": "succeeded",
+        },
+        base_url="http://127.0.0.1:8000",
+        token="test-token",
+        timeout=1,
+    )
+
+    assert result["passed"] is False
+    assert "missing_tool_execution_list" in result["checks_failed"]
