@@ -310,8 +310,8 @@ class SchedulerStore:
         instant = _utc(now or datetime.now(timezone.utc))
         with self.connect() as con:
             cursor = con.execute(
-                "UPDATE scheduled_tasks SET status=?,task_id=?,result_json=?,error_text=?,"
-                "lease_owner=NULL,lease_expires_at=NULL,updated_at=? "
+                "UPDATE scheduled_tasks SET status=?,task_id=COALESCE(?,task_id),"
+                "result_json=?,error_text=?,lease_owner=NULL,lease_expires_at=NULL,updated_at=? "
                 "WHERE id=? AND status='running' AND lease_owner=? AND lease_expires_at>?",
                 (status, task_id, result_json, error_text, instant, schedule_id, worker_id, instant),
             )
