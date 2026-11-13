@@ -951,3 +951,42 @@ async def test_recovery_unexpected_error_rebuilds_diagnostics_from_task_journal(
     assert diagnostics["failures"][0]["category"] == "task_failed"
     assert diagnostics["failures"][0]["task_id"] == task_id
 
+
+
+def test_recovery_plan_preview_is_read_only_and_marks_uncertain_tasks(tmp_path, monkeypatch):
+    store, workflow_id, task_id, qa_id = make_workflow(
+        tmp_path, monkeypatch, task_status="unknown"
+    )
+    before = store.get_workflow(workflow_id)
+    preview = app_module.get_agent_workflow_recovery_plan(workflow_id)
+    after = store.get_workflow(workflow_id)
+
+    assert preview["recoverable"] is True
+    assert preview["execution_started"] is False
+    assert preview["state_mutated"] is False
+    task = next(item for item in preview["tasks"] if item["task_id"] == task_id)
+    assert task["disposition"] == "uncertain_never_replay"
+    assert preview["qa_review"]["task_id"] == qa_id
+    assert preview["qa_review"]["disposition"] == "eligible_to_resume"
+    assert before["status"] == after["status"] == "unknown"
+    assert before["results"] == after["results"]
+    assert store.get_task(task_id)["status"] == "unknown"
+    assert store.get_task(qa_id)["status"] == "queued"
+
+
+def test_recovery_plan_preview_rejects_checkpoint_journal_mismatch(tmp_path, monkeypatch):
+    store, workflow_id, task_id, _qa_id = make_workflow(tmp_path, monkeypatch)
+    store.set_task_status(task_id, "running")
+    preview = app_module.get_agent_workflow_recovery_plan(workflow_id)
+    task = next(item for item in preview["tasks"] if item["task_id"] == task_id)
+    assert preview["recoverable"] is False
+    assert "checkpoint_journal_mismatch" in task["issues"]
+    assert task["disposition"] == "manual_inspection_required"
+
+
+def test_recovery_plan_preview_returns_404_for_missing_workflow(tmp_path, monkeypatch):
+    store = TaskStore(tmp_path / "missing-preview.sqlite3")
+    monkeypatch.setattr(app_module, "store", store)
+    with pytest.raises(HTTPException) as error:
+        app_module.get_agent_workflow_recovery_plan("missing")
+    assert error.value.status_code == 404
