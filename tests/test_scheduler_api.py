@@ -290,3 +290,19 @@ def test_schedule_pause_resume_api_reports_missing_schedule(monkeypatch, tmp_pat
     client = make_client(monkeypatch, tmp_path)
     assert client.post("/scheduler/schedules/missing/pause", headers=auth()).status_code == 404
     assert client.post("/scheduler/schedules/missing/resume", headers=auth()).status_code == 404
+
+
+def test_scheduler_list_filters(monkeypatch, tmp_path):
+    client = make_client(monkeypatch, tmp_path)
+    first = client.post("/scheduler/schedules", json=payload(), headers=auth()).json()
+    second = client.post("/scheduler/schedules",
+        json=payload(idempotency_key="filter-second", run_at="2027-01-01T00:00:00+00:00"),
+        headers=auth()).json()
+    assert client.post(f"/scheduler/schedules/{first['id']}/pause", headers=auth()).status_code == 200
+    paused = client.get("/scheduler/schedules?paused=true", headers=auth())
+    assert paused.status_code == 200
+    assert [x["id"] for x in paused.json()["schedules"]] == [first["id"]]
+    pending = client.get("/scheduler/schedules?status=scheduled&paused=false", headers=auth())
+    assert {x["id"] for x in pending.json()["schedules"]} == {second["id"]}
+    invalid = client.get("/scheduler/schedules?status=not-real", headers=auth())
+    assert invalid.status_code == 400

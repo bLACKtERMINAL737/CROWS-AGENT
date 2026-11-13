@@ -475,3 +475,20 @@ def test_pause_resume_only_transition_pending_schedules_and_are_idempotent(tmp_p
     assert store.resume_schedule(item["id"]) is None
     with pytest.raises(KeyError, match="Schedule not found"):
         store.pause_schedule("missing")
+
+
+def test_list_schedules_filters_by_status_pause_and_overdue(tmp_path):
+    store = SchedulerStore(tmp_path / "schedule-filters.sqlite3")
+    due = store.create_schedule("Due", "Run", "2026-01-01T00:00:00+00:00", "filter-due")
+    future = store.create_schedule("Future", "Run", "2027-01-01T00:00:00+00:00", "filter-future")
+    paused = store.create_schedule("Paused", "Run", "2026-01-01T00:00:00+00:00", "filter-paused")
+    assert store.pause_schedule(paused["id"])
+    assert [x["id"] for x in store.list_schedules(status="scheduled", paused=True)] == [paused["id"]]
+    assert {x["id"] for x in store.list_schedules(overdue_before="2026-06-01T00:00:00+00:00")} == {due["id"]}
+    assert {x["id"] for x in store.list_schedules(status="scheduled", paused=False)} == {due["id"], future["id"]}
+
+
+def test_list_schedules_rejects_unknown_status(tmp_path):
+    store = SchedulerStore(tmp_path / "schedule-invalid-filter.sqlite3")
+    with pytest.raises(ValueError, match="invalid schedule status"):
+        store.list_schedules(status="mystery")
