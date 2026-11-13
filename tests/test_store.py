@@ -882,3 +882,66 @@ def test_legacy_workflow_without_control_row_remains_readable(tmp_path: Path):
     saved = store.get_workflow(workflow["id"])
     assert saved is not None
     assert saved["control_state"] == "running"
+
+
+def test_durable_task_queue_claims_oldest_task_once_and_tracks_attempts(tmp_path: Path):
+    import pytest
+
+    store = TaskStore(tmp_path / "durable-queue.sqlite3")
+    first = store.create_task("first", "oldest")
+    second = store.create_task("second", "newer")
+
+    claimed = store.claim_next_task("worker-a", lease_seconds=60)
+
+    assert claimed is not None
+    assert claimed["id"] == first["id"]
+    assert claimed["status"] == "running"
+    assert claimed["lease_owner"] == "worker-a"
+    assert claimed["attempt_count"] == 1
+    assert store.claim_next_task("worker-b", lease_seconds=60) is None
+    assert store.get_task(second["id"])["status"] == "queued"
+
+
+def test_task_lease_renewal_and_completion_are_owner_fenced(tmp_path: Path):
+    store = TaskStore(tmp_path / "task-lease-fence.sqlite3")
+    task = store.create_task("leased", "complete exactly once")
+    assert store.claim_next_task("worker-a", lease_seconds=60)["id"] == task["id"]
+
+    assert store.owns_task_lease(task["id"], "worker-a")
+    assert not store.owns_task_lease(task["id"], "worker-b")
+    assert not store.renew_task_lease(task["id"], "worker-b", lease_seconds=60)
+    assert store.renew_task_lease(task["id"], "worker-a", lease_seconds=60)
+    assert not store.finish_task_lease(task["id"], "worker-b", "succeeded", result={"ok": True})
+    assert store.finish_task_lease(task["id"], "worker-a", "succeeded", result={"ok": True})
+    assert store.get_task(task["id"])["status"] == "succeeded"
+    assert not store.finish_task_lease(task["id"], "worker-a", "failed", error="stale")
+
+
+def test_expired_task_lease_becomes_unknown_and_is_never_requeued(tmp_path: Path):
+    store = TaskStore(tmp_path / "task-lease-expiry.sqlite3")
+    task = store.create_task("possibly executed", "do not replay automatically")
+    assert store.claim_next_task("worker-a", lease_seconds=60)["id"] == task["id"]
+    with store.connect() as con:
+        con.execute(
+            "UPDATE tasks SET lease_expires_at=? WHERE id=?",
+            ("2000-01-01T00:00:00+00:00", task["id"]),
+        )
+
+    assert store.mark_expired_task_leases_unknown() == 1
+    saved = store.get_task(task["id"])
+    assert saved["status"] == "unknown"
+    assert saved["lease_owner"] is None
+    assert store.claim_next_task("worker-b", lease_seconds=60) is None
+    assert not store.finish_task_lease(task["id"], "worker-a", "succeeded")
+
+
+def test_task_queue_metrics_are_aggregate_and_include_attempts(tmp_path: Path):
+    store = TaskStore(tmp_path / "task-queue-metrics.sqlite3")
+    store.create_task("one", "queued")
+    running = store.create_task("two", "running")
+    store.claim_next_task("worker-a")
+    metrics = store.task_queue_metrics()
+
+    assert metrics["queued"] == 1
+    assert metrics["running"] == 1
+    assert metrics["total_attempts"] == 1
