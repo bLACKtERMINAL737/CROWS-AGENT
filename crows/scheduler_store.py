@@ -129,6 +129,33 @@ class SchedulerStore:
                 raise KeyError("Schedule not found")
             return False
 
+    def reschedule_schedule(self, schedule_id: str, run_at: str | datetime) -> dict[str, Any] | None:
+        """Change the due time only while a schedule is still pending.
+
+        Running or terminal work is never moved: callers must reconcile an
+        uncertain execution rather than silently scheduling a second attempt.
+        """
+        due = _utc(run_at)
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            cursor = con.execute(
+                "UPDATE scheduled_tasks SET run_at=?,updated_at=? "
+                "WHERE id=? AND status='scheduled'",
+                (due, now, schedule_id),
+            )
+            if cursor.rowcount:
+                row = con.execute(
+                    "SELECT * FROM scheduled_tasks WHERE id=?", (schedule_id,)
+                ).fetchone()
+                return dict(row)
+            exists = con.execute(
+                "SELECT 1 FROM scheduled_tasks WHERE id=?", (schedule_id,)
+            ).fetchone()
+            if exists is None:
+                raise KeyError("Schedule not found")
+            return None
+
     def claim_due(self, worker_id: str, *, now: str | datetime | None = None,
                   lease_seconds: int = 60, limit: int = 10) -> list[dict[str, Any]]:
         worker_id = worker_id.strip()
