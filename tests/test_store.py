@@ -1090,9 +1090,9 @@ def test_queue_metrics_report_queue_latency_and_lease_health(tmp_path: Path):
     from datetime import datetime, timedelta, timezone
 
     store = TaskStore(tmp_path / "task-queue-health.sqlite3")
-    old = store.create_task("old queued", "waiting")
     running = store.create_task("running", "in progress")
     assert store.claim_next_task("health-worker", lease_seconds=120)["id"] == running["id"]
+    old = store.create_task("old queued", "waiting")
     now = datetime.now(timezone.utc)
     with store.connect() as con:
         con.execute(
