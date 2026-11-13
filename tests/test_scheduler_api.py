@@ -251,60 +251,6 @@ def test_retry_api_enforces_bounded_attempt_budget(monkeypatch, tmp_path):
 
 
 
-def test_recurring_schedule_requeues_after_success_and_skips_missed_ticks(tmp_path):
-    store = SchedulerStore(tmp_path / "recurring.sqlite3")
-    item = store.create_schedule(
-        "Recurring report", "Run report", "2026-01-01T00:00:00+00:00",
-        "recurring-report", recurrence_interval_seconds=3600, max_occurrences=3,
-    )
-    claimed = store.claim_due("worker-a", now="2026-01-01T00:01:00+00:00", lease_seconds=300)
-    assert len(claimed) == 1
-    assert store.attach_task_to_claim(item["id"], "worker-a", "task-1",
-                                      now="2026-01-01T00:01:01+00:00")
-    assert store.finish_claim(
-        item["id"], "worker-a", "completed", result_json='{"ok":true}',
-        now="2026-01-01T02:30:00+00:00",
-    )
-    saved = store.get_schedule(item["id"])
-    assert saved["status"] == "scheduled"
-    assert saved["occurrence_count"] == 1
-    assert saved["task_id"] is None
-    assert saved["run_at"] == "2026-01-01T03:00:00+00:00"
-    history = store.list_execution_history(item["id"])
-    assert len(history) == 1 and history[0]["task_id"] == "task-1"
-
-
-def test_recurring_schedule_stops_at_occurrence_limit_and_preserves_history(tmp_path):
-    store = SchedulerStore(tmp_path / "recurring-limit.sqlite3")
-    item = store.create_schedule(
-        "Recurring report", "Run report", "2026-01-01T00:00:00+00:00",
-        "recurring-limit", recurrence_interval_seconds=3600, max_occurrences=2,
-    )
-    store.claim_due("worker-a", now="2026-01-01T00:01:00+00:00", lease_seconds=300)
-    assert store.finish_claim(item["id"], "worker-a", "completed", task_id="task-1",
-                              now="2026-01-01T00:02:00+00:00")
-    store.claim_due("worker-b", now="2026-01-01T01:01:00+00:00", lease_seconds=300)
-    assert store.finish_claim(item["id"], "worker-b", "completed", task_id="task-2",
-                              now="2026-01-01T01:02:00+00:00")
-    saved = store.get_schedule(item["id"])
-    assert saved["status"] == "completed" and saved["occurrence_count"] == 2
-    assert len(store.list_execution_history(item["id"])) == 2
-
-
-def test_recurring_schedule_requires_both_fields_and_bounded_values(tmp_path):
-    store = SchedulerStore(tmp_path / "recurring-validation.sqlite3")
-    with pytest.raises(ValueError, match="supplied together"):
-        store.create_schedule("Recurring", "Run", "2026-01-01T00:00:00+00:00", "bad-one",
-                              recurrence_interval_seconds=3600)
-    with pytest.raises(ValueError, match="between 60"):
-        store.create_schedule("Recurring", "Run", "2026-01-01T00:00:00+00:00", "bad-two",
-                              recurrence_interval_seconds=30, max_occurrences=2)
-    with pytest.raises(ValueError, match="between 2"):
-        store.create_schedule("Recurring", "Run", "2026-01-01T00:00:00+00:00", "bad-three",
-                              recurrence_interval_seconds=3600, max_occurrences=1)
-
-
-
 def test_recurring_schedule_api_exposes_bounded_configuration_and_history(monkeypatch, tmp_path):
     client = make_client(monkeypatch, tmp_path)
     created = client.post("/scheduler/schedules",

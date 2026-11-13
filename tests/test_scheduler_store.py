@@ -1,253 +1,396 @@
-from fastapi.testclient import TestClient
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+import pytest
 
-import crows.app as app_module
 from crows.scheduler_store import SchedulerStore
 
 
-def make_client(monkeypatch, tmp_path):
-    monkeypatch.setenv("AETHER_API_TOKEN", "test-token")
-    monkeypatch.setattr(app_module, "scheduler_store", SchedulerStore(tmp_path / "scheduler.sqlite3"))
-    return TestClient(app_module.app, raise_server_exceptions=False)
+def test_schedule_persists_across_reopen_and_normalizes_timezone(tmp_path: Path):
+    path = tmp_path / "scheduler.sqlite3"
+    due = datetime(2026, 11, 1, 12, tzinfo=timezone(timedelta(hours=2)))
+    saved = SchedulerStore(path).create_schedule("Daily report", "Summarize updates", due, "report-1")
+    reopened = SchedulerStore(path).get_schedule(saved["id"])
+    assert reopened["status"] == "scheduled"
+    assert reopened["run_at"] == "2026-11-01T10:00:00+00:00"
 
 
-def auth():
-    return {"X-Aether-Token": "test-token"}
+def test_idempotency_returns_same_schedule_and_rejects_conflicting_payload(tmp_path: Path):
+    store = SchedulerStore(tmp_path / "scheduler.sqlite3")
+    first = store.create_schedule("One", "Do one", "2026-11-01T10:00:00+00:00", "same-key")
+    second = store.create_schedule("One", "Do one", "2026-11-01T10:00:00+00:00", "same-key")
+    assert first["id"] == second["id"]
+    with pytest.raises(ValueError, match="different schedule"):
+        store.create_schedule("Other", "Do other", "2026-11-01T10:00:00+00:00", "same-key")
 
 
-def payload(**overrides):
-    value = {
-        "title": "Prepare weekly report",
-        "input": "Summarize the project updates",
-        "run_at": "2026-11-01T10:00:00+00:00",
-        "idempotency_key": "weekly-report-1",
-    }
-    value.update(overrides)
-    return value
+def test_claim_due_is_atomic_across_store_instances(tmp_path: Path):
+    path = tmp_path / "scheduler.sqlite3"
+    first, second = SchedulerStore(path), SchedulerStore(path)
+    first.create_schedule("Due", "Run", "2026-01-01T00:00:00+00:00", "due-1")
+    now = "2026-01-02T00:00:00+00:00"
+    claims_a = first.claim_due("worker-a", now=now)
+    claims_b = second.claim_due("worker-b", now=now)
+    assert len(claims_a) == 1
+    assert claims_b == []
+    assert claims_a[0]["lease_owner"] == "worker-a"
 
 
-def test_create_and_read_schedule_hides_internal_lease_and_idempotency_fields(monkeypatch, tmp_path):
-    client = make_client(monkeypatch, tmp_path)
-    created = client.post("/scheduler/schedules", json=payload(), headers=auth())
-    assert created.status_code == 201
-    item = created.json()
-    assert item["status"] == "scheduled"
-    assert item["title"] == "Prepare weekly report"
-    assert "idempotency_key" not in item
-    assert "lease_owner" not in item
-
-    fetched = client.get(f"/scheduler/schedules/{item['id']}", headers=auth())
-    assert fetched.status_code == 200
-    assert fetched.json()["id"] == item["id"]
+def test_only_lease_owner_can_finish_and_expired_lease_is_unknown(tmp_path: Path):
+    store = SchedulerStore(tmp_path / "scheduler.sqlite3")
+    item = store.create_schedule("Due", "Run", "2026-01-01T00:00:00+00:00", "due-1")
+    store.claim_due("worker-a", now="2026-01-02T00:00:00+00:00", lease_seconds=10)
+    assert not store.finish_claim(item["id"], "worker-b", "completed", now="2026-01-02T00:00:05+00:00")
+    assert not store.finish_claim(item["id"], "worker-a", "completed", now="2026-01-02T00:00:11+00:00")
+    assert store.mark_expired_claims_unknown(now="2026-01-02T00:00:11+00:00") == 1
+    saved = store.get_schedule(item["id"])
+    assert saved["status"] == "unknown"
+    assert saved["lease_owner"] is None
 
 
-def test_create_is_idempotent_and_conflicting_key_is_rejected(monkeypatch, tmp_path):
-    client = make_client(monkeypatch, tmp_path)
-    first = client.post("/scheduler/schedules", json=payload(), headers=auth())
-    second = client.post("/scheduler/schedules", json=payload(), headers=auth())
-    assert first.status_code == second.status_code == 201
-    assert first.json()["id"] == second.json()["id"]
+def test_cancel_only_affects_pending_schedules(tmp_path: Path):
+    store = SchedulerStore(tmp_path / "scheduler.sqlite3")
+    item = store.create_schedule("Later", "Run", "2027-01-01T00:00:00+00:00", "later-1")
+    assert store.cancel_schedule(item["id"]) is True
+    assert store.cancel_schedule(item["id"]) is False
+    assert store.get_schedule(item["id"])["status"] == "cancelled"
 
-    conflict = client.post(
-        "/scheduler/schedules",
-        json=payload(title="Different schedule"),
-        headers=auth(),
+
+def test_schedule_rejects_naive_timestamps_and_invalid_limits(tmp_path: Path):
+    store = SchedulerStore(tmp_path / "scheduler.sqlite3")
+    with pytest.raises(ValueError, match="timezone"):
+        store.create_schedule("No timezone", "Run", "2026-11-01T10:00:00", "naive")
+    with pytest.raises(ValueError, match="limit"):
+        store.list_schedules(0)
+    with pytest.raises(ValueError, match="worker_id"):
+        store.claim_due(" ")
+
+
+def test_renew_claim_extends_only_current_unexpired_owner_lease(tmp_path):
+    store = SchedulerStore(tmp_path / "renew.sqlite3")
+    schedule = store.create_schedule(
+        "[research] Renew lease", "Check lease ownership",
+        "2026-11-01T10:00:00+00:00", "renew-lease-1"
     )
-    assert conflict.status_code == 422
-
-
-def test_schedule_requires_timezone_aware_run_at(monkeypatch, tmp_path):
-    client = make_client(monkeypatch, tmp_path)
-    response = client.post(
-        "/scheduler/schedules",
-        json=payload(run_at="2026-11-01T10:00:00"),
-        headers=auth(),
+    claimed = store.claim_due(
+        "worker-a", now="2026-11-01T10:01:00+00:00", lease_seconds=60
     )
-    assert response.status_code == 422
+    assert len(claimed) == 1
+    assert store.renew_claim(
+        schedule["id"], "worker-a", now="2026-11-01T10:01:30+00:00", lease_seconds=300
+    ) is True
+    renewed = store.get_schedule(schedule["id"])
+    assert renewed["lease_expires_at"] == "2026-11-01T10:06:30+00:00"
+    assert store.renew_claim(
+        schedule["id"], "worker-b", now="2026-11-01T10:01:31+00:00"
+    ) is False
 
 
-def test_list_limit_and_missing_schedule_errors(monkeypatch, tmp_path):
-    client = make_client(monkeypatch, tmp_path)
-    assert client.get("/scheduler/schedules?limit=201", headers=auth()).status_code == 400
-    assert client.get("/scheduler/schedules/missing", headers=auth()).status_code == 404
-    assert client.get("/scheduler/schedules", headers=auth()).json() == {"schedules": []}
-
-
-def test_cancel_pending_schedule_and_reject_second_cancel(monkeypatch, tmp_path):
-    client = make_client(monkeypatch, tmp_path)
-    created = client.post("/scheduler/schedules", json=payload(), headers=auth())
-    schedule_id = created.json()["id"]
-
-    cancelled = client.delete(f"/scheduler/schedules/{schedule_id}", headers=auth())
-    assert cancelled.status_code == 200
-    assert cancelled.json() == {"id": schedule_id, "status": "cancelled"}
-    assert client.delete(f"/scheduler/schedules/{schedule_id}", headers=auth()).status_code == 409
-    assert client.delete("/scheduler/schedules/missing", headers=auth()).status_code == 404
-
-
-def test_scheduler_routes_require_api_token(monkeypatch, tmp_path):
-    client = make_client(monkeypatch, tmp_path)
-    response = client.get("/scheduler/schedules")
-    assert response.status_code == 401
-
-def test_unknown_schedule_reconciliation_audit_api(monkeypatch, tmp_path):
-    client = make_client(monkeypatch, tmp_path)
-    created = client.post("/scheduler/schedules", json=payload(), headers=auth())
-    schedule_id = created.json()["id"]
-    scheduler = app_module.scheduler_store
-    scheduler.claim_due("test-worker", now="2026-11-01T10:01:00+00:00", lease_seconds=1)
-    scheduler.mark_expired_claims_unknown(now="2026-11-01T10:01:02+00:00")
-
-    response = client.post(
-        f"/scheduler/schedules/{schedule_id}/reconcile",
-        json={"note": "Reviewed task journal", "evidence": "No confirmed completion found."},
-        headers=auth(),
+def test_renew_claim_rejects_expired_lease_and_invalid_duration(tmp_path):
+    store = SchedulerStore(tmp_path / "expired-renew.sqlite3")
+    schedule = store.create_schedule(
+        "[research] Expired lease", "Check expired lease",
+        "2026-11-01T10:00:00+00:00", "renew-lease-2"
     )
-    assert response.status_code == 200
-    assert response.json()["schedule_id"] == schedule_id
-    assert client.get(
-        f"/scheduler/schedules/{schedule_id}/audit", headers=auth()
-    ).json()["entries"][0]["note"] == "Reviewed task journal"
-    assert scheduler.get_schedule(schedule_id)["status"] == "unknown"
+    store.claim_due("worker-a", now="2026-11-01T10:01:00+00:00", lease_seconds=10)
+    assert store.renew_claim(
+        schedule["id"], "worker-a", now="2026-11-01T10:01:11+00:00"
+    ) is False
+    with pytest.raises(ValueError):
+        store.renew_claim(schedule["id"], "worker-a", lease_seconds=0)
 
-    duplicate = client.post(
-        f"/scheduler/schedules/{schedule_id}/reconcile",
-        json={"note": "Again", "evidence": "Still uncertain."},
-        headers=auth(),
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from crows.scheduler_store import SchedulerStore
+
+
+def make_unknown_schedule(store):
+    due = datetime.now(timezone.utc) - timedelta(minutes=2)
+    saved = store.create_schedule(
+        "[research] Verify uncertain run", "Inspect the task journal",
+        due, "audit-unknown-1"
     )
-    assert duplicate.status_code == 200
-    assert len(client.get(
-        f"/scheduler/schedules/{schedule_id}/audit", headers=auth()
-    ).json()["entries"]) == 2
+    store.claim_due("scheduler-worker", lease_seconds=1)
+    store.mark_expired_claims_unknown(now=datetime.now(timezone.utc) + timedelta(seconds=2))
+    return saved
 
 
-def test_reconciliation_api_rejects_pending_schedule_and_requires_auth(monkeypatch, tmp_path):
-    client = make_client(monkeypatch, tmp_path)
-    created = client.post("/scheduler/schedules", json=payload(), headers=auth())
-    schedule_id = created.json()["id"]
-    body = {"note": "Checked", "evidence": "Not due yet"}
-    assert client.post(
-        f"/scheduler/schedules/{schedule_id}/reconcile", json=body, headers=auth()
-    ).status_code == 409
-    assert client.post(
-        f"/scheduler/schedules/{schedule_id}/reconcile", json=body
-    ).status_code == 401
+def test_reconciliation_audit_is_append_only_and_does_not_change_unknown_state(tmp_path):
+    store = SchedulerStore(tmp_path / "reconcile.sqlite3")
+    schedule = make_unknown_schedule(store)
 
-
-def test_reschedule_pending_schedule_normalizes_time_and_preserves_identity(monkeypatch, tmp_path):
-    client = make_client(monkeypatch, tmp_path)
-    created = client.post("/scheduler/schedules", json=payload(), headers=auth())
-    schedule_id = created.json()["id"]
-
-    response = client.patch(
-        f"/scheduler/schedules/{schedule_id}",
-        json={"run_at": "2026-11-02T12:00:00+02:00"},
-        headers=auth(),
+    first = store.record_reconciliation(
+        schedule["id"], "Reviewed task journal", "Task remained unknown; no provider result found."
+    )
+    second = store.record_reconciliation(
+        schedule["id"], "Checked provider logs", "No confirmed completion or safe retry evidence."
     )
 
-    assert response.status_code == 200
-    assert response.json()["id"] == schedule_id
-    assert response.json()["run_at"] == "2026-11-02T10:00:00+00:00"
-    assert response.json()["status"] == "scheduled"
-    assert "idempotency_key" not in response.json()
+    assert first["id"] != second["id"]
+    entries = store.list_reconciliation_audit(schedule["id"])
+    assert len(entries) == 2
+    assert entries[0]["note"] == "Reviewed task journal"
+    assert store.get_schedule(schedule["id"])["status"] == "unknown"
 
 
-def test_reschedule_rejects_running_terminal_missing_and_naive_times(monkeypatch, tmp_path):
-    client = make_client(monkeypatch, tmp_path)
-    created = client.post("/scheduler/schedules", json=payload(), headers=auth())
-    schedule_id = created.json()["id"]
-
-    naive = client.patch(
-        f"/scheduler/schedules/{schedule_id}",
-        json={"run_at": "2026-11-02T12:00:00"},
-        headers=auth(),
+def test_reconciliation_requires_unknown_schedule_and_valid_note(tmp_path):
+    store = SchedulerStore(tmp_path / "reconcile-validation.sqlite3")
+    scheduled = store.create_schedule(
+        "[research] Still pending", "Do not execute", "2027-01-01T00:00:00+00:00", "pending-audit"
     )
-    assert naive.status_code == 422
+    with pytest.raises(ValueError, match="only unknown"):
+        store.record_reconciliation(scheduled["id"], "Checked", "Evidence")
+    with pytest.raises(ValueError, match="required"):
+        store.record_reconciliation(scheduled["id"], " ", "Evidence")
+    with pytest.raises(KeyError):
+        store.record_reconciliation("missing", "Checked", "Evidence")
+    with pytest.raises(KeyError):
+        store.list_reconciliation_audit("missing")
 
-    scheduler = app_module.scheduler_store
-    scheduler.claim_due("reschedule-worker", now="2026-11-01T10:01:00+00:00")
-    running = client.patch(
-        f"/scheduler/schedules/{schedule_id}",
-        json={"run_at": "2026-11-03T10:00:00+00:00"},
-        headers=auth(),
+
+
+def test_concurrent_workers_have_exactly_one_claim_winner(tmp_path: Path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    path = tmp_path / "concurrent-claims.sqlite3"
+    stores = [SchedulerStore(path) for _ in range(8)]
+    stores[0].create_schedule(
+        "One due task", "Must have one owner", "2026-01-01T00:00:00+00:00", "one-owner"
     )
-    assert running.status_code == 409
+    barrier = Barrier(len(stores))
 
-    missing = client.patch(
-        "/scheduler/schedules/missing",
-        json={"run_at": "2026-11-03T10:00:00+00:00"},
-        headers=auth(),
+    def claim(index):
+        barrier.wait(timeout=5)
+        return stores[index].claim_due(
+            f"worker-{index}", now="2026-01-02T00:00:00+00:00", limit=10
+        )
+
+    with ThreadPoolExecutor(max_workers=len(stores)) as pool:
+        results = list(pool.map(claim, range(len(stores))))
+
+    claimed = [item for batch in results for item in batch]
+    assert len(claimed) == 1
+    assert claimed[0]["lease_owner"].startswith("worker-")
+
+
+def test_finish_claim_cannot_overwrite_expired_or_recovered_schedule(tmp_path: Path):
+    store = SchedulerStore(tmp_path / "stale-finish.sqlite3")
+    schedule = store.create_schedule(
+        "Due", "Do work", "2026-01-01T00:00:00+00:00", "stale-finish"
     )
-    assert missing.status_code == 404
-
-
-def test_reschedule_requires_authentication(monkeypatch, tmp_path):
-    client = make_client(monkeypatch, tmp_path)
-    response = client.patch(
-        "/scheduler/schedules/missing",
-        json={"run_at": "2026-11-03T10:00:00+00:00"},
-    )
-    assert response.status_code == 401
-
-
-def test_failed_schedule_retry_api_is_audited_and_unknown_is_blocked(monkeypatch, tmp_path):
-    client = make_client(monkeypatch, tmp_path)
-    created = client.post("/scheduler/schedules", json=payload(), headers=auth())
-    schedule_id = created.json()["id"]
-    scheduler = app_module.scheduler_store
-    scheduler.claim_due("retry-worker", now="2026-11-01T10:01:00+00:00", lease_seconds=300)
-    assert scheduler.finish_claim(
-        schedule_id, "retry-worker", "failed", task_id="task-failed-1",
-        error_text="Definitive task failure",
-        now="2026-11-01T10:01:30+00:00",
+    store.claim_due(
+        "worker-old", now="2026-01-02T00:00:00+00:00", lease_seconds=5
     )
 
-    response = client.post(
-        f"/scheduler/schedules/{schedule_id}/retry",
-        json={"run_at": "2026-11-03T12:00:00+02:00", "reason": "Reviewed failed task journal"},
-        headers=auth(),
-    )
-    assert response.status_code == 200
-    assert response.json()["status"] == "scheduled"
-    assert response.json()["retry_count"] == 1
-    audit = client.get(
-        f"/scheduler/schedules/{schedule_id}/retry-audit", headers=auth()
-    )
-    assert audit.status_code == 200
-    assert audit.json()["entries"][0]["previous_task_id"] == "task-failed-1"
+    assert store.finish_claim(
+        schedule["id"], "worker-old", "completed",
+        now="2026-01-02T00:00:06+00:00", result_json='{"ok": true}'
+    ) is False
+    assert store.mark_expired_claims_unknown(
+        now="2026-01-02T00:00:06+00:00"
+    ) == 1
+    assert store.finish_claim(
+        schedule["id"], "worker-old", "completed",
+        now="2026-01-02T00:00:07+00:00"
+    ) is False
 
-    scheduler.claim_due("retry-worker", now="2026-11-04T10:00:00+00:00", lease_seconds=1)
-    scheduler.mark_expired_claims_unknown(now="2026-11-04T10:00:02+00:00")
-    blocked = client.post(
-        f"/scheduler/schedules/{schedule_id}/retry",
-        json={"run_at": "2026-11-05T10:00:00+00:00", "reason": "must not replay"},
-        headers=auth(),
-    )
-    assert blocked.status_code == 409
+    saved = store.get_schedule(schedule["id"])
+    assert saved["status"] == "unknown"
+    assert saved["result_json"] is None
+    assert saved["lease_owner"] is None
 
 
-def test_failed_schedule_retry_requires_authentication(monkeypatch, tmp_path):
-    client = make_client(monkeypatch, tmp_path)
-    response = client.post(
-        "/scheduler/schedules/missing/retry",
-        json={"run_at": "2026-11-03T10:00:00+00:00", "reason": "reviewed"},
+def test_expired_lease_cannot_be_resurrected_by_renewal(tmp_path: Path):
+    store = SchedulerStore(tmp_path / "no-resurrection.sqlite3")
+    schedule = store.create_schedule(
+        "Due", "Do work", "2026-01-01T00:00:00+00:00", "no-resurrection"
     )
-    assert response.status_code == 401
+    store.claim_due(
+        "worker-a", now="2026-01-02T00:00:00+00:00", lease_seconds=5
+    )
+    assert store.mark_expired_claims_unknown(
+        now="2026-01-02T00:00:06+00:00"
+    ) == 1
+
+    assert store.renew_claim(
+        schedule["id"], "worker-a",
+        now="2026-01-02T00:00:07+00:00", lease_seconds=300
+    ) is False
+    assert store.get_schedule(schedule["id"])["status"] == "unknown"
 
 
-def test_retry_api_enforces_bounded_attempt_budget(monkeypatch, tmp_path):
-    client = make_client(monkeypatch, tmp_path)
-    created = client.post("/scheduler/schedules", json=payload(), headers=auth())
-    schedule_id = created.json()["id"]
-    response = client.post(
-        f"/scheduler/schedules/{schedule_id}/retry",
-        json={
-            "run_at": "2026-11-03T10:00:00+00:00",
-            "reason": "reviewed",
-            "max_retries": 11,
-        },
-        headers=auth(),
+def test_claim_due_respects_limit_and_due_order(tmp_path: Path):
+    store = SchedulerStore(tmp_path / "claim-order.sqlite3")
+    for index, run_at in enumerate((
+        "2026-01-01T00:03:00+00:00",
+        "2026-01-01T00:01:00+00:00",
+        "2026-01-01T00:02:00+00:00",
+    )):
+        store.create_schedule(f"Task {index}", "Run", run_at, f"ordered-{index}")
+
+    claimed = store.claim_due(
+        "worker-a", now="2026-01-02T00:00:00+00:00", limit=2
     )
-    assert response.status_code == 422
+    assert [item["title"] for item in claimed] == ["Task 1", "Task 2"]
+    assert store.metrics()["by_status"]["scheduled"] == 1
+    assert store.metrics()["by_status"]["running"] == 2
+
+
+def test_retry_failed_schedule_is_explicit_audited_and_preserves_history(tmp_path):
+    store = SchedulerStore(tmp_path / "schedule-retry.sqlite3")
+    item = store.create_schedule(
+        "[research] Retry report", "Run report", "2026-01-01T00:00:00+00:00", "retry-report"
+    )
+    store.claim_due("worker-a", now="2026-01-02T00:00:00+00:00", lease_seconds=300)
+    assert store.finish_claim(
+        item["id"], "worker-a", "failed", task_id="failed-task-1",
+        error_text="Specialist returned a definitive failure",
+        now="2026-01-02T00:01:00+00:00",
+    )
+
+    retried = store.retry_failed_schedule(
+        item["id"], "2026-01-03T12:00:00+02:00", "Operator reviewed failed task journal"
+    )
+    assert retried["status"] == "scheduled"
+    assert retried["run_at"] == "2026-01-03T10:00:00+00:00"
+    assert retried["retry_count"] == 1
+    assert retried["task_id"] is None
+    audit = store.list_retry_audit(item["id"])
+    assert len(audit) == 1
+    assert audit[0]["previous_task_id"] == "failed-task-1"
+    assert audit[0]["reason"] == "Operator reviewed failed task journal"
+    assert store.retry_failed_schedule(
+        item["id"], "2026-01-04T00:00:00+00:00", "second attempt"
+    ) is None
+
+
+def test_retry_failed_schedule_never_replays_unknown_or_running_work(tmp_path):
+    store = SchedulerStore(tmp_path / "schedule-retry-guard.sqlite3")
+    unknown = store.create_schedule(
+        "Unknown", "uncertain", "2026-01-01T00:00:00+00:00", "unknown-retry"
+    )
+    store.claim_due("worker-a", now="2026-01-02T00:00:00+00:00", lease_seconds=1)
+    store.mark_expired_claims_unknown(now="2026-01-02T00:00:02+00:00")
+    assert store.retry_failed_schedule(
+        unknown["id"], "2026-01-04T00:00:00+00:00", "try again"
+    ) is None
+    with pytest.raises(ValueError, match="retry reason"):
+        store.retry_failed_schedule(
+            unknown["id"], "2026-01-04T00:00:00+00:00", " "
+        )
+
+
+def test_failed_schedule_retry_budget_is_bounded(tmp_path):
+    store = SchedulerStore(tmp_path / "schedule-retry-budget.sqlite3")
+    item = store.create_schedule(
+        "Budget", "Run budget test", "2026-01-01T00:00:00+00:00", "retry-budget"
+    )
+    # Three retries are permitted after three reviewed failures. A fourth
+    # definitive failure must remain failed once the retry budget is spent.
+    for attempt in range(1, 5):
+        day = attempt + 2
+        claimed = store.claim_due(
+            f"worker-{attempt}", now=f"2026-01-{day:02d}T00:00:00+00:00",
+            lease_seconds=300,
+        )
+        assert claimed
+        assert store.finish_claim(
+            item["id"], f"worker-{attempt}", "failed",
+            task_id=f"failed-task-{attempt}",
+            now=f"2026-01-{day:02d}T00:01:00+00:00",
+        )
+        if attempt <= 3:
+            saved = store.retry_failed_schedule(
+                item["id"], f"2026-01-{day + 1:02d}T00:00:00+00:00",
+                f"reviewed failure {attempt}", max_retries=3,
+            )
+            assert saved["retry_count"] == attempt
+    assert store.retry_failed_schedule(
+        item["id"], "2026-01-10T00:00:00+00:00", "exhausted", max_retries=3
+    ) is None
+    assert len(store.list_retry_audit(item["id"])) == 3
+
+
+def test_attach_task_to_claim_is_durable_and_fenced(tmp_path):
+    store = SchedulerStore(tmp_path / "scheduler-task-link.sqlite3")
+    schedule = store.create_schedule(
+        "Linked", "Run linked task", "2026-01-01T00:00:00+00:00", "linked-task"
+    )
+    claimed = store.claim_due(
+        "worker-a", now="2026-01-02T00:00:00+00:00", lease_seconds=60
+    )
+    assert len(claimed) == 1
+    assert store.attach_task_to_claim(
+        schedule["id"], "worker-b", "task-wrong",
+        now="2026-01-02T00:00:10+00:00",
+    ) is False
+    assert store.attach_task_to_claim(
+        schedule["id"], "worker-a", "task-linked",
+        now="2026-01-02T00:00:10+00:00",
+    ) is True
+    assert SchedulerStore(store.db_path).get_schedule(schedule["id"])["task_id"] == "task-linked"
+    assert store.attach_task_to_claim(
+        schedule["id"], "worker-a", "task-replacement",
+        now="2026-01-02T00:00:11+00:00",
+    ) is False
+
+
+def test_attach_task_to_claim_rejects_expired_lease(tmp_path):
+    store = SchedulerStore(tmp_path / "scheduler-task-link-expired.sqlite3")
+    schedule = store.create_schedule(
+        "Expired", "Do not attach", "2026-01-01T00:00:00+00:00", "expired-link"
+    )
+    store.claim_due(
+        "worker-a", now="2026-01-02T00:00:00+00:00", lease_seconds=5
+    )
+    assert store.attach_task_to_claim(
+        schedule["id"], "worker-a", "task-late",
+        now="2026-01-02T00:00:06+00:00",
+    ) is False
+    assert store.get_schedule(schedule["id"])["task_id"] is None
+
+
+def test_finish_claim_preserves_previously_attached_task_id(tmp_path: Path):
+    store = SchedulerStore(tmp_path / "scheduler-finish-link.sqlite3")
+    item = store.create_schedule(
+        "Linked task", "Run linked task", "2026-01-01T00:00:00+00:00", "finish-link"
+    )
+    now = "2026-01-02T00:00:00+00:00"
+    assert len(store.claim_due("worker-a", now=now, lease_seconds=60)) == 1
+    assert store.attach_task_to_claim(
+        item["id"], "worker-a", "durable-task-123",
+        now="2026-01-02T00:00:10+00:00",
+    )
+    # Worker completion often omits task_id because it was attached before
+    # execution. Finalization must not erase that durable crash-diagnosis link.
+    assert store.finish_claim(
+        item["id"], "worker-a", "completed",
+        result_json='{"ok":true}',
+        now="2026-01-02T00:00:20+00:00",
+    )
+    saved = store.get_schedule(item["id"])
+    assert saved["status"] == "completed"
+    assert saved["task_id"] == "durable-task-123"
+
+
+def test_finish_claim_can_replace_attached_task_id_only_when_explicit(tmp_path: Path):
+    store = SchedulerStore(tmp_path / "scheduler-finish-replace.sqlite3")
+    item = store.create_schedule(
+        "Linked task", "Run linked task", "2026-01-01T00:00:00+00:00", "finish-replace"
+    )
+    now = "2026-01-02T00:00:00+00:00"
+    store.claim_due("worker-a", now=now, lease_seconds=60)
+    assert store.attach_task_to_claim(
+        item["id"], "worker-a", "durable-task-original",
+        now="2026-01-02T00:00:10+00:00",
+    )
+    assert store.finish_claim(
+        item["id"], "worker-a", "failed", task_id="durable-task-final",
+        now="2026-01-02T00:00:20+00:00",
+    )
+    assert store.get_schedule(item["id"])["task_id"] == "durable-task-final"
 
 
 
@@ -261,13 +404,10 @@ def test_recurring_schedule_requeues_after_success_and_skips_missed_ticks(tmp_pa
     assert len(claimed) == 1
     assert store.attach_task_to_claim(item["id"], "worker-a", "task-1",
                                       now="2026-01-01T00:01:01+00:00")
-    assert store.finish_claim(
-        item["id"], "worker-a", "completed", result_json='{"ok":true}',
-        now="2026-01-01T02:30:00+00:00",
-    )
+    assert store.finish_claim(item["id"], "worker-a", "completed",
+                              result_json='{"ok":true}', now="2026-01-01T02:30:00+00:00")
     saved = store.get_schedule(item["id"])
-    assert saved["status"] == "scheduled"
-    assert saved["occurrence_count"] == 1
+    assert saved["status"] == "scheduled" and saved["occurrence_count"] == 1
     assert saved["task_id"] is None
     assert saved["run_at"] == "2026-01-01T03:00:00+00:00"
     history = store.list_execution_history(item["id"])
@@ -302,27 +442,3 @@ def test_recurring_schedule_requires_both_fields_and_bounded_values(tmp_path):
     with pytest.raises(ValueError, match="between 2"):
         store.create_schedule("Recurring", "Run", "2026-01-01T00:00:00+00:00", "bad-three",
                               recurrence_interval_seconds=3600, max_occurrences=1)
-
-
-
-def test_recurring_schedule_api_exposes_bounded_configuration_and_history(monkeypatch, tmp_path):
-    client = make_client(monkeypatch, tmp_path)
-    created = client.post("/scheduler/schedules",
-        json=payload(recurrence_interval_seconds=3600, max_occurrences=4), headers=auth())
-    assert created.status_code == 201
-    item = created.json()
-    assert item["recurrence_interval_seconds"] == 3600
-    assert item["max_occurrences"] == 4
-    assert item["occurrence_count"] == 0
-    history = client.get(f"/scheduler/schedules/{item['id']}/execution-history", headers=auth())
-    assert history.status_code == 200 and history.json() == {"entries": []}
-
-
-def test_recurring_schedule_api_rejects_partial_or_unbounded_configuration(monkeypatch, tmp_path):
-    client = make_client(monkeypatch, tmp_path)
-    partial = client.post("/scheduler/schedules",
-        json=payload(recurrence_interval_seconds=3600), headers=auth())
-    assert partial.status_code == 422
-    too_many = client.post("/scheduler/schedules",
-        json=payload(recurrence_interval_seconds=3600, max_occurrences=1001), headers=auth())
-    assert too_many.status_code == 422
