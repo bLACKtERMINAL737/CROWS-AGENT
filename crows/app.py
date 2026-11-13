@@ -1637,8 +1637,9 @@ def list_agent_workflows(
     offset: int = 0,
     status: str | None = None,
     control_state: str | None = None,
+    query: str | None = None,
 ):
-    """List durable workflows with stable pagination and optional status filters."""
+    """List durable workflows with stable pagination and optional filters."""
     valid_statuses = {"running", "succeeded", "partial", "failed", "unknown"}
     valid_control_states = {"running", "paused", "cancel_requested", "completed"}
     if not 1 <= limit <= 200 or not 0 <= offset <= 1_000_000:
@@ -1649,9 +1650,11 @@ def list_agent_workflows(
         raise HTTPException(status_code=400, detail="invalid workflow status filter")
     if control_state is not None and control_state not in valid_control_states:
         raise HTTPException(status_code=400, detail="invalid workflow control-state filter")
+    if query is not None and (not isinstance(query, str) or len(query) > 200):
+        raise HTTPException(status_code=400, detail="workflow query must be at most 200 characters")
     try:
         workflows = store.list_workflows(
-            limit, offset=offset, status=status, control_state=control_state
+            limit, offset=offset, status=status, control_state=control_state, query=query
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
