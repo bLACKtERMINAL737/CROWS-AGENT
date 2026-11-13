@@ -786,8 +786,12 @@ class TaskStore:
         with self.connect() as con:
             tools = con.execute("UPDATE tool_executions SET status='unknown',updated_at=?,error_text=COALESCE(error_text,?) WHERE status='running'",
                                 (now, "Process restarted during execution; verify effects before retrying"))
-            tasks = con.execute("UPDATE tasks SET status='unknown',updated_at=?,error_text=COALESCE(error_text,?) WHERE status='running'",
-                                (now, "Process restarted during task; verify effects before retrying"))
+            tasks = con.execute(
+                "UPDATE tasks SET status='unknown',updated_at=?,"
+                "error_text=COALESCE(error_text,?),lease_owner=NULL,lease_expires_at=NULL "
+                "WHERE status='running'",
+                (now, "Process restarted during task; verify effects before retrying"),
+            )
             workflows = con.execute(
                 "UPDATE agent_workflows SET status='unknown',updated_at=?,"
                 "error_text=COALESCE(error_text,?) WHERE status='running'",
