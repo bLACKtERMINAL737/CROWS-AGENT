@@ -734,3 +734,35 @@ def test_run_case_rejects_malformed_tool_execution_entries(monkeypatch):
     assert result["passed"] is False
     assert result["checks_failed"].count("invalid_tool_execution") == 2
     assert result["tools_observed"] == []
+
+
+@pytest.mark.parametrize("execution_status", [None, 1, {}, [], "completed", "SUCCESS"])
+def test_run_case_rejects_invalid_tool_execution_status(monkeypatch, execution_status):
+    responses = iter([
+        {"answer": "Done.", "task_id": "task-tool-status", "tool_calls": 1},
+        {
+            "status": "succeeded",
+            "tool_executions": [{
+                "tool_name": "workspace.read_file",
+                "status": execution_status,
+                "result_json": '{"content":"fixture"}',
+            }],
+        },
+    ])
+    monkeypatch.setattr(agent_eval, "_request_json", lambda *_a, **_kw: next(responses))
+
+    result = agent_eval.run_case(
+        {
+            "name": "invalid tool execution status",
+            "message": "Read a fixture",
+            "expected_tools": ["workspace.read_file"],
+            "min_tool_calls": 1,
+        },
+        base_url="http://127.0.0.1:8000",
+        token="test-token",
+        timeout=1,
+    )
+
+    assert result["passed"] is False
+    assert "invalid_tool_execution_status" in result["checks_failed"]
+    assert result["tools_observed"] == []

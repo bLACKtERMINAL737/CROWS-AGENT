@@ -236,6 +236,12 @@ def run_case(
                     if not isinstance(raw_name, str) or not raw_name.strip():
                         checks.append("invalid_tool_execution")
                         continue
+                    raw_execution_status = execution.get("status")
+                    if not isinstance(raw_execution_status, str) or raw_execution_status not in {
+                        "queued", "running", "succeeded", "failed", "unknown"
+                    }:
+                        checks.append("invalid_tool_execution_status")
+                        continue
                     name = raw_name
                     tool_names.append(name)
                     raw_arguments = execution.get("input_json", execution.get("arguments"))
