@@ -96,8 +96,8 @@ class DiscordOutboundAdapter(OutboundTransportAdapter):
                 response = await client.post(
                     url, json={"content": message.text}, params={"wait": "true"}
                 )
-        retry_after = _retry_after(response)
-        body = response.json() if response.content else {}
+        body = _response_body(response)
+        retry_after = _retry_after(response, body)
         ok = response.is_success and isinstance(body, dict) and bool(body.get("id"))
         provider_id = str(body.get("id")) if ok else None
         return OutboundTransportReceipt(ok, response.status_code, provider_id, retry_after)
