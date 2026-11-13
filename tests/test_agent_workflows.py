@@ -1183,3 +1183,31 @@ def test_workflow_health_api_validates_limits(tmp_path, monkeypatch):
     with pytest.raises(HTTPException) as error:
         app_module.get_agent_workflow_health(stale_after_seconds=0)
     assert error.value.status_code == 400
+
+
+def test_workflow_timeline_supports_bounded_stable_pagination(tmp_path, monkeypatch):
+    store, _router = configure(monkeypatch, tmp_path)
+    workflow = store.create_workflow("Timeline pagination", [])
+    monkeypatch.setattr(app_module, "store", store)
+
+    first = app_module.get_agent_workflow_timeline(workflow["id"], limit=1, offset=0)
+    second = app_module.get_agent_workflow_timeline(workflow["id"], limit=1, offset=1)
+    assert first["pagination"] == {
+        "limit": 1, "offset": 0, "total": 2, "returned": 1, "has_more": True
+    }
+    assert second["pagination"] == {
+        "limit": 1, "offset": 1, "total": 2, "returned": 1, "has_more": False
+    }
+    assert first["timeline"][0]["event"] == "workflow.created"
+    assert second["timeline"][0]["event"] == "workflow.status"
+    with pytest.raises(HTTPException) as error:
+        app_module.get_agent_workflow_timeline(workflow["id"], limit=0)
+    assert error.value.status_code == 400
+
+
+def test_workflow_timeline_returns_not_found_before_building_events(tmp_path, monkeypatch):
+    store, _router = configure(monkeypatch, tmp_path)
+    monkeypatch.setattr(app_module, "store", store)
+    with pytest.raises(HTTPException) as error:
+        app_module.get_agent_workflow_timeline("missing-workflow")
+    assert error.value.status_code == 404
