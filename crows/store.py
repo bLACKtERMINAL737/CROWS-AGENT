@@ -683,6 +683,7 @@ class TaskStore:
         offset: int = 0,
         status: str | None = None,
         control_state: str | None = None,
+        query: str | None = None,
     ) -> list[dict[str, Any]]:
         """List workflows with bounded pagination and optional operational filters."""
         valid_statuses = {"running", "succeeded", "partial", "failed", "unknown"}
@@ -693,6 +694,12 @@ class TaskStore:
             raise ValueError("invalid workflow status filter")
         if control_state is not None and control_state not in valid_control_states:
             raise ValueError("invalid workflow control-state filter")
+        if query is not None:
+            if not isinstance(query, str) or len(query) > 200:
+                raise ValueError("workflow query must be at most 200 characters")
+            query = query.strip()
+            if not query:
+                query = None
 
         clauses: list[str] = []
         params: list[Any] = []
@@ -705,6 +712,10 @@ class TaskStore:
                 "THEN 'running' ELSE 'completed' END)=?"
             )
             params.append(control_state)
+        if query is not None:
+            clauses.append("crows_casefold(w.goal) LIKE ? ESCAPE '\\\\'")
+            escaped_query = query.casefold().replace("\\\\", "\\\\\\\\").replace("%", "\\\\%").replace("_", "\\\\_")
+            params.append(f"%{escaped_query}%")
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         params.extend((limit, offset))
         with self.connect() as con:
