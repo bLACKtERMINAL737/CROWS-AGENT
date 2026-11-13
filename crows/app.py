@@ -2573,7 +2573,7 @@ async def run_agent_task(task_id: str):
         return await _run_agent_task_unlimited(task_id)
 
 
-async def _run_agent_task_unlimited(task_id: str):
+async def _run_agent_task_unlimited(task_id: str, *, worker_id: str | None = None):
     """Run a claimed specialist task with bounded, journaled read-only tool use."""
     task = store.get_task(task_id)
     if not task:
@@ -2590,15 +2590,20 @@ async def _run_agent_task_unlimited(task_id: str):
     if role not in known_roles:
         raise HTTPException(status_code=422, detail="Task title does not contain a registered specialist role.")
 
-    # Claim before provider/tool work so concurrent requests cannot run the same task twice.
-    try:
-        claimed = store.claim_task(task_id)
-    except AttributeError:
-        raise HTTPException(status_code=503, detail="Task execution requires the latest task-store implementation.")
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Task not found") from exc
-    if not claimed:
-        raise HTTPException(status_code=409, detail="Task is no longer queued.")
+    # Direct API requests atomically claim queued tasks. Durable workers must
+    # present a live lease owner; expired or superseded workers are fenced out.
+    if worker_id is not None:
+        if not store.owns_task_lease(task_id, worker_id):
+            raise HTTPException(status_code=409, detail="Task worker lease is no longer valid.")
+    else:
+        try:
+            claimed = store.claim_task(task_id)
+        except AttributeError:
+            raise HTTPException(status_code=503, detail="Task execution requires the latest task-store implementation.")
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Task not found") from exc
+        if not claimed:
+            raise HTTPException(status_code=409, detail="Task is no longer queued.")
 
     task_input = str(task.get("input_text", ""))
     task_type = "coding" if role == "coding" else "reasoning"
@@ -2679,17 +2684,17 @@ async def _run_agent_task_unlimited(task_id: str):
         return result
 
     def persist_task_status(status: str, answer: str | None = None, error: str | None = None):
-        store.set_task_status(
-            task_id,
-            status,
-            result={
-                "role": role,
-                "answer": answer,
-                "tool_calls": tool_state["succeeded"],
-                "tool_attempts": tool_state["attempts"],
-            },
-            error=error,
-        )
+        result = {
+            "role": role,
+            "answer": answer,
+            "tool_calls": tool_state["succeeded"],
+            "tool_attempts": tool_state["attempts"],
+        }
+        if worker_id is not None:
+            if not store.finish_task_lease(task_id, worker_id, status, result=result, error=error):
+                raise HTTPException(status_code=409, detail="Task lease expired before its result could be committed.")
+        else:
+            store.set_task_status(task_id, status, result=result, error=error)
 
     try:
         response = await router.chat_with_tools(
