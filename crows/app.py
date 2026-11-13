@@ -1768,14 +1768,11 @@ async def recover_agent_workflow(workflow_id: str):
     try:
         recovery_timeout_seconds = agent_task_timeout_seconds()
 
-        recovery_global_concurrency = agent_global_max_concurrency()
-
         async def run_recovery_task_with_timeout(task_id: str) -> dict[str, Any]:
             try:
-                async with agent_execution_slot(recovery_global_concurrency):
-                    return await asyncio.wait_for(
-                        run_agent_task(task_id), timeout=recovery_timeout_seconds
-                    )
+                return await asyncio.wait_for(
+                    run_agent_task(task_id), timeout=recovery_timeout_seconds
+                )
             except asyncio.TimeoutError as exc:
                 saved_task = store.get_task(task_id)
                 # A timeout may occur after a tool has already acted. Never make the
@@ -2237,11 +2234,10 @@ async def orchestrate_agent_work(request: AgentPlanRequest):
 
     async def run_task_with_timeout(task_id: str) -> dict[str, Any]:
         try:
-            async with agent_execution_slot(global_max_concurrency):
-                return await asyncio.wait_for(
-                    run_agent_task(task_id),
-                    timeout=task_timeout_seconds,
-                )
+            return await asyncio.wait_for(
+                run_agent_task(task_id),
+                timeout=task_timeout_seconds,
+            )
         except asyncio.TimeoutError:
             saved_task = store.get_task(task_id)
             # A timed-out operation may have made progress before cancellation.
@@ -2572,7 +2568,13 @@ async def orchestrate_agent_work(request: AgentPlanRequest):
 
 @app.post("/agents/run/{task_id}")
 async def run_agent_task(task_id: str):
-    """Run one queued specialist task with bounded, journaled read-only tool use."""
+    """Run one specialist task through the shared server-wide admission budget."""
+    async with agent_execution_slot(agent_global_max_concurrency()):
+        return await _run_agent_task_unlimited(task_id)
+
+
+async def _run_agent_task_unlimited(task_id: str):
+    """Run a claimed specialist task with bounded, journaled read-only tool use."""
     task = store.get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
