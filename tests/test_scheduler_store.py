@@ -280,3 +280,30 @@ def test_retry_failed_schedule_never_replays_unknown_or_running_work(tmp_path):
         store.retry_failed_schedule(
             unknown["id"], "2026-01-04T00:00:00+00:00", " "
         )
+
+
+def test_failed_schedule_retry_budget_is_bounded(tmp_path):
+    store = SchedulerStore(tmp_path / "schedule-retry-budget.sqlite3")
+    item = store.create_schedule(
+        "Budget", "Run budget test", "2026-01-01T00:00:00+00:00", "retry-budget"
+    )
+    for attempt in range(1, 4):
+        claimed = store.claim_due(
+            f"worker-{attempt}", now=f"2026-01-0{attempt + 2}T00:00:00+00:00"
+        )
+        assert claimed
+        assert store.finish_claim(
+            item["id"], f"worker-{attempt}", "failed",
+            task_id=f"failed-task-{attempt}",
+            now=f"2026-01-0{attempt + 2}T00:01:00+00:00",
+        )
+        if attempt < 3:
+            saved = store.retry_failed_schedule(
+                item["id"], f"2026-01-0{attempt + 3}T00:00:00+00:00",
+                f"reviewed failure {attempt}", max_attempts=3,
+            )
+            assert saved["retry_count"] == attempt
+    assert store.retry_failed_schedule(
+        item["id"], "2026-01-10T00:00:00+00:00", "exhausted", max_attempts=3
+    ) is None
+    assert len(store.list_retry_audit(item["id"])) == 2

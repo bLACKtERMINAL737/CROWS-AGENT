@@ -231,3 +231,19 @@ def test_failed_schedule_retry_requires_authentication(monkeypatch, tmp_path):
         json={"run_at": "2026-11-03T10:00:00+00:00", "reason": "reviewed"},
     )
     assert response.status_code == 401
+
+
+def test_retry_api_enforces_bounded_attempt_budget(monkeypatch, tmp_path):
+    client = make_client(monkeypatch, tmp_path)
+    created = client.post("/scheduler/schedules", json=payload(), headers=auth())
+    schedule_id = created.json()["id"]
+    response = client.post(
+        f"/scheduler/schedules/{schedule_id}/retry",
+        json={
+            "run_at": "2026-11-03T10:00:00+00:00",
+            "reason": "reviewed",
+            "max_attempts": 11,
+        },
+        headers=auth(),
+    )
+    assert response.status_code == 422

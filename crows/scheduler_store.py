@@ -180,7 +180,7 @@ class SchedulerStore:
             return None
 
     def retry_failed_schedule(
-        self, schedule_id: str, run_at: str | datetime, reason: str
+        self, schedule_id: str, run_at: str | datetime, reason: str, *, max_attempts: int = 3
     ) -> dict[str, Any] | None:
         """Explicitly requeue a definitively failed schedule with an audit record.
 
@@ -191,6 +191,8 @@ class SchedulerStore:
         reason = reason.strip()
         if not reason or len(reason) > 2000:
             raise ValueError("retry reason is required and must be at most 2000 characters")
+        if not 1 <= max_attempts <= 10:
+            raise ValueError("max_attempts must be between 1 and 10")
         now, audit_id = datetime.now(timezone.utc).isoformat(), str(uuid4())
         with self.connect() as con:
             con.execute("BEGIN IMMEDIATE")
@@ -201,6 +203,8 @@ class SchedulerStore:
             if row is None:
                 raise KeyError("Schedule not found")
             if row["status"] != "failed":
+                return None
+            if int(row["retry_count"] or 0) >= max_attempts:
                 return None
             retry_number = int(row["retry_count"] or 0) + 1
             con.execute(

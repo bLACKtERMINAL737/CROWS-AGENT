@@ -348,6 +348,7 @@ class ScheduleRescheduleRequest(BaseModel):
 class ScheduleRetryRequest(BaseModel):
     run_at: str = Field(min_length=1, max_length=80)
     reason: str = Field(min_length=1, max_length=2000)
+    max_attempts: int = Field(default=3, ge=1, le=10)
 
 
 
@@ -3005,7 +3006,8 @@ def reschedule_schedule(schedule_id: str, request: ScheduleRescheduleRequest):
 def retry_failed_schedule(schedule_id: str, request: ScheduleRetryRequest):
     try:
         saved = scheduler_store.retry_failed_schedule(
-            schedule_id, request.run_at, request.reason
+            schedule_id, request.run_at, request.reason,
+            max_attempts=request.max_attempts,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Schedule not found") from exc
@@ -3014,7 +3016,7 @@ def retry_failed_schedule(schedule_id: str, request: ScheduleRetryRequest):
     if saved is None:
         raise HTTPException(
             status_code=409,
-            detail="Only definitively failed schedules can be retried; reconcile unknown work first",
+            detail="Schedule is not definitively failed or its retry budget is exhausted; reconcile unknown work first",
         )
     return _public_schedule(saved)
 
