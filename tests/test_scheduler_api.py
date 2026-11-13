@@ -194,10 +194,11 @@ def test_failed_schedule_retry_api_is_audited_and_unknown_is_blocked(monkeypatch
     created = client.post("/scheduler/schedules", json=payload(), headers=auth())
     schedule_id = created.json()["id"]
     scheduler = app_module.scheduler_store
-    scheduler.claim_due("retry-worker", now="2026-11-01T10:01:00+00:00")
+    scheduler.claim_due("retry-worker", now="2026-11-01T10:01:00+00:00", lease_seconds=300)
     assert scheduler.finish_claim(
         schedule_id, "retry-worker", "failed", task_id="task-failed-1",
         error_text="Definitive task failure",
+        now="2026-11-01T10:01:30+00:00",
     )
 
     response = client.post(

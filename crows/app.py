@@ -327,7 +327,13 @@ class TaskRequest(BaseModel):
 
 
 class TaskRetryRequest(BaseModel):
-    max_retries: int = Field(default=3, ge=1, le=10)
+    # Accept both names during the API transition. The store uses max_attempts.
+    max_attempts: int = Field(default=3, ge=1, le=10)
+    max_retries: int | None = Field(default=None, ge=1, le=10)
+
+    @property
+    def retry_limit(self) -> int:
+        return self.max_attempts if self.max_retries is None else self.max_retries
 
 class ScheduleReconciliationRequest(BaseModel):
     note: str = Field(min_length=1, max_length=2000)
@@ -2940,7 +2946,7 @@ def create_task(request: TaskRequest):
 @app.post("/tasks/{task_id}/retry")
 def retry_failed_task(task_id: str, request: TaskRetryRequest):
     try:
-        retried = store.retry_failed_task(task_id, max_retries=request.max_retries)
+        retried = store.retry_failed_task(task_id, max_attempts=request.retry_limit)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc
     except ValueError as exc:

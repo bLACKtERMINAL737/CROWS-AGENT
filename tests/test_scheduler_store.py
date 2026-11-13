@@ -243,7 +243,7 @@ def test_retry_failed_schedule_is_explicit_audited_and_preserves_history(tmp_pat
     item = store.create_schedule(
         "[research] Retry report", "Run report", "2026-01-01T00:00:00+00:00", "retry-report"
     )
-    store.claim_due("worker-a", now="2026-01-02T00:00:00+00:00")
+    store.claim_due("worker-a", now="2026-01-02T00:00:00+00:00", lease_seconds=300)
     assert store.finish_claim(
         item["id"], "worker-a", "failed", task_id="failed-task-1",
         error_text="Specialist returned a definitive failure",
@@ -289,7 +289,7 @@ def test_failed_schedule_retry_budget_is_bounded(tmp_path):
     )
     for attempt in range(1, 4):
         claimed = store.claim_due(
-            f"worker-{attempt}", now=f"2026-01-0{attempt + 2}T00:00:00+00:00"
+            f"worker-{attempt}", now=f"2026-01-0{attempt + 2}T00:00:00+00:00", lease_seconds=300
         )
         assert claimed
         assert store.finish_claim(
