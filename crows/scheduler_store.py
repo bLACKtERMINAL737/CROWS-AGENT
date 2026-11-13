@@ -64,6 +64,29 @@ class SchedulerStore:
                 "CREATE INDEX IF NOT EXISTS idx_schedule_audit_schedule "
                 "ON schedule_reconciliation_audit(schedule_id, created_at)"
             )
+            columns = {
+                row["name"] for row in con.execute("PRAGMA table_info(scheduled_tasks)")
+            }
+            if "retry_count" not in columns:
+                con.execute(
+                    "ALTER TABLE scheduled_tasks ADD COLUMN retry_count "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS schedule_retry_audit (
+                  id TEXT PRIMARY KEY,
+                  schedule_id TEXT NOT NULL REFERENCES scheduled_tasks(id),
+                  previous_task_id TEXT,
+                  reason TEXT NOT NULL,
+                  requested_run_at TEXT NOT NULL,
+                  retry_number INTEGER NOT NULL,
+                  created_at TEXT NOT NULL
+                )
+            """)
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_schedule_retry_audit_schedule "
+                "ON schedule_retry_audit(schedule_id, created_at)"
+            )
 
     def connect(self) -> sqlite3.Connection:
         con = sqlite3.connect(self.db_path, timeout=10, isolation_level=None)
@@ -155,6 +178,65 @@ class SchedulerStore:
             if exists is None:
                 raise KeyError("Schedule not found")
             return None
+
+    def retry_failed_schedule(
+        self, schedule_id: str, run_at: str | datetime, reason: str, *, max_retries: int = 3
+    ) -> dict[str, Any] | None:
+        """Explicitly requeue a definitively failed schedule with an audit record.
+
+        Unknown/running schedules are never eligible: uncertain side effects
+        must be reconciled rather than replayed.
+        """
+        due = _utc(run_at)
+        reason = reason.strip()
+        if not reason or len(reason) > 2000:
+            raise ValueError("retry reason is required and must be at most 2000 characters")
+        if not 1 <= max_retries <= 10:
+            raise ValueError("max_retries must be between 1 and 10")
+        now, audit_id = datetime.now(timezone.utc).isoformat(), str(uuid4())
+        with self.connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute(
+                "SELECT status,task_id,retry_count FROM scheduled_tasks WHERE id=?",
+                (schedule_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError("Schedule not found")
+            if row["status"] != "failed":
+                return None
+            if int(row["retry_count"] or 0) >= max_retries:
+                return None
+            retry_number = int(row["retry_count"] or 0) + 1
+            con.execute(
+                "UPDATE scheduled_tasks SET status='scheduled',run_at=?,updated_at=?,"
+                "lease_owner=NULL,lease_expires_at=NULL,task_id=NULL,result_json=NULL,"
+                "error_text=NULL,retry_count=? WHERE id=? AND status='failed'",
+                (due, now, retry_number, schedule_id),
+            )
+            con.execute(
+                "INSERT INTO schedule_retry_audit "
+                "(id,schedule_id,previous_task_id,reason,requested_run_at,retry_number,created_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (audit_id, schedule_id, row["task_id"], reason, due, retry_number, now),
+            )
+            saved = con.execute(
+                "SELECT * FROM scheduled_tasks WHERE id=?", (schedule_id,)
+            ).fetchone()
+            return dict(saved)
+
+    def list_retry_audit(self, schedule_id: str) -> list[dict[str, Any]]:
+        with self.connect() as con:
+            if con.execute(
+                "SELECT 1 FROM scheduled_tasks WHERE id=?", (schedule_id,)
+            ).fetchone() is None:
+                raise KeyError("Schedule not found")
+            rows = con.execute(
+                "SELECT id,schedule_id,previous_task_id,reason,requested_run_at,"
+                "retry_number,created_at FROM schedule_retry_audit "
+                "WHERE schedule_id=? ORDER BY created_at,id",
+                (schedule_id,),
+            ).fetchall()
+            return [dict(row) for row in rows]
 
     def claim_due(self, worker_id: str, *, now: str | datetime | None = None,
                   lease_seconds: int = 60, limit: int = 10) -> list[dict[str, Any]]:

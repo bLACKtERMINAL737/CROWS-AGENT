@@ -236,3 +236,78 @@ def test_claim_due_respects_limit_and_due_order(tmp_path: Path):
     assert [item["title"] for item in claimed] == ["Task 1", "Task 2"]
     assert store.metrics()["by_status"]["scheduled"] == 1
     assert store.metrics()["by_status"]["running"] == 2
+
+
+def test_retry_failed_schedule_is_explicit_audited_and_preserves_history(tmp_path):
+    store = SchedulerStore(tmp_path / "schedule-retry.sqlite3")
+    item = store.create_schedule(
+        "[research] Retry report", "Run report", "2026-01-01T00:00:00+00:00", "retry-report"
+    )
+    store.claim_due("worker-a", now="2026-01-02T00:00:00+00:00", lease_seconds=300)
+    assert store.finish_claim(
+        item["id"], "worker-a", "failed", task_id="failed-task-1",
+        error_text="Specialist returned a definitive failure",
+        now="2026-01-02T00:01:00+00:00",
+    )
+
+    retried = store.retry_failed_schedule(
+        item["id"], "2026-01-03T12:00:00+02:00", "Operator reviewed failed task journal"
+    )
+    assert retried["status"] == "scheduled"
+    assert retried["run_at"] == "2026-01-03T10:00:00+00:00"
+    assert retried["retry_count"] == 1
+    assert retried["task_id"] is None
+    audit = store.list_retry_audit(item["id"])
+    assert len(audit) == 1
+    assert audit[0]["previous_task_id"] == "failed-task-1"
+    assert audit[0]["reason"] == "Operator reviewed failed task journal"
+    assert store.retry_failed_schedule(
+        item["id"], "2026-01-04T00:00:00+00:00", "second attempt"
+    ) is None
+
+
+def test_retry_failed_schedule_never_replays_unknown_or_running_work(tmp_path):
+    store = SchedulerStore(tmp_path / "schedule-retry-guard.sqlite3")
+    unknown = store.create_schedule(
+        "Unknown", "uncertain", "2026-01-01T00:00:00+00:00", "unknown-retry"
+    )
+    store.claim_due("worker-a", now="2026-01-02T00:00:00+00:00", lease_seconds=1)
+    store.mark_expired_claims_unknown(now="2026-01-02T00:00:02+00:00")
+    assert store.retry_failed_schedule(
+        unknown["id"], "2026-01-04T00:00:00+00:00", "try again"
+    ) is None
+    with pytest.raises(ValueError, match="retry reason"):
+        store.retry_failed_schedule(
+            unknown["id"], "2026-01-04T00:00:00+00:00", " "
+        )
+
+
+def test_failed_schedule_retry_budget_is_bounded(tmp_path):
+    store = SchedulerStore(tmp_path / "schedule-retry-budget.sqlite3")
+    item = store.create_schedule(
+        "Budget", "Run budget test", "2026-01-01T00:00:00+00:00", "retry-budget"
+    )
+    # Three retries are permitted after three reviewed failures. A fourth
+    # definitive failure must remain failed once the retry budget is spent.
+    for attempt in range(1, 5):
+        day = attempt + 2
+        claimed = store.claim_due(
+            f"worker-{attempt}", now=f"2026-01-{day:02d}T00:00:00+00:00",
+            lease_seconds=300,
+        )
+        assert claimed
+        assert store.finish_claim(
+            item["id"], f"worker-{attempt}", "failed",
+            task_id=f"failed-task-{attempt}",
+            now=f"2026-01-{day:02d}T00:01:00+00:00",
+        )
+        if attempt <= 3:
+            saved = store.retry_failed_schedule(
+                item["id"], f"2026-01-{day + 1:02d}T00:00:00+00:00",
+                f"reviewed failure {attempt}", max_retries=3,
+            )
+            assert saved["retry_count"] == attempt
+    assert store.retry_failed_schedule(
+        item["id"], "2026-01-10T00:00:00+00:00", "exhausted", max_retries=3
+    ) is None
+    assert len(store.list_retry_audit(item["id"])) == 3

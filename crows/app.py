@@ -327,7 +327,13 @@ class TaskRequest(BaseModel):
 
 
 class TaskRetryRequest(BaseModel):
+    # Accept both names during the API transition. The store uses max_attempts.
     max_attempts: int = Field(default=3, ge=1, le=10)
+    max_retries: int | None = Field(default=None, ge=1, le=10)
+
+    @property
+    def retry_limit(self) -> int:
+        return self.max_attempts if self.max_retries is None else self.max_retries
 
 class ScheduleReconciliationRequest(BaseModel):
     note: str = Field(min_length=1, max_length=2000)
@@ -343,6 +349,12 @@ class ScheduleCreateRequest(BaseModel):
 
 class ScheduleRescheduleRequest(BaseModel):
     run_at: str = Field(min_length=1, max_length=80)
+
+
+class ScheduleRetryRequest(BaseModel):
+    run_at: str = Field(min_length=1, max_length=80)
+    reason: str = Field(min_length=1, max_length=2000)
+    max_retries: int = Field(default=3, ge=1, le=10)
 
 
 
@@ -2934,7 +2946,7 @@ def create_task(request: TaskRequest):
 @app.post("/tasks/{task_id}/retry")
 def retry_failed_task(task_id: str, request: TaskRetryRequest):
     try:
-        retried = store.retry_failed_task(task_id, max_attempts=request.max_attempts)
+        retried = store.retry_failed_task(task_id, max_attempts=request.retry_limit)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc
     except ValueError as exc:
@@ -2964,6 +2976,7 @@ def _public_schedule(schedule: dict[str, Any]) -> dict[str, Any]:
         for key in (
             "id", "title", "input_text", "run_at", "status",
             "created_at", "updated_at", "task_id", "result_json", "error_text",
+            "retry_count",
         )
     }
 
@@ -2993,6 +3006,33 @@ def reschedule_schedule(schedule_id: str, request: ScheduleRescheduleRequest):
             detail="Only pending schedules can be rescheduled",
         )
     return _public_schedule(saved)
+
+
+@app.post("/scheduler/schedules/{schedule_id}/retry")
+def retry_failed_schedule(schedule_id: str, request: ScheduleRetryRequest):
+    try:
+        saved = scheduler_store.retry_failed_schedule(
+            schedule_id, request.run_at, request.reason,
+            max_retries=request.max_retries,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Schedule not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if saved is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Schedule is not definitively failed or its retry budget is exhausted; reconcile unknown work first",
+        )
+    return _public_schedule(saved)
+
+
+@app.get("/scheduler/schedules/{schedule_id}/retry-audit")
+def schedule_retry_audit(schedule_id: str):
+    try:
+        return {"entries": scheduler_store.list_retry_audit(schedule_id)}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Schedule not found") from exc
 
 
 @app.post("/scheduler/schedules/{schedule_id}/reconcile")

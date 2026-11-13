@@ -187,3 +187,64 @@ def test_reschedule_requires_authentication(monkeypatch, tmp_path):
         json={"run_at": "2026-11-03T10:00:00+00:00"},
     )
     assert response.status_code == 401
+
+
+def test_failed_schedule_retry_api_is_audited_and_unknown_is_blocked(monkeypatch, tmp_path):
+    client = make_client(monkeypatch, tmp_path)
+    created = client.post("/scheduler/schedules", json=payload(), headers=auth())
+    schedule_id = created.json()["id"]
+    scheduler = app_module.scheduler_store
+    scheduler.claim_due("retry-worker", now="2026-11-01T10:01:00+00:00", lease_seconds=300)
+    assert scheduler.finish_claim(
+        schedule_id, "retry-worker", "failed", task_id="task-failed-1",
+        error_text="Definitive task failure",
+        now="2026-11-01T10:01:30+00:00",
+    )
+
+    response = client.post(
+        f"/scheduler/schedules/{schedule_id}/retry",
+        json={"run_at": "2026-11-03T12:00:00+02:00", "reason": "Reviewed failed task journal"},
+        headers=auth(),
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "scheduled"
+    assert response.json()["retry_count"] == 1
+    audit = client.get(
+        f"/scheduler/schedules/{schedule_id}/retry-audit", headers=auth()
+    )
+    assert audit.status_code == 200
+    assert audit.json()["entries"][0]["previous_task_id"] == "task-failed-1"
+
+    scheduler.claim_due("retry-worker", now="2026-11-04T10:00:00+00:00", lease_seconds=1)
+    scheduler.mark_expired_claims_unknown(now="2026-11-04T10:00:02+00:00")
+    blocked = client.post(
+        f"/scheduler/schedules/{schedule_id}/retry",
+        json={"run_at": "2026-11-05T10:00:00+00:00", "reason": "must not replay"},
+        headers=auth(),
+    )
+    assert blocked.status_code == 409
+
+
+def test_failed_schedule_retry_requires_authentication(monkeypatch, tmp_path):
+    client = make_client(monkeypatch, tmp_path)
+    response = client.post(
+        "/scheduler/schedules/missing/retry",
+        json={"run_at": "2026-11-03T10:00:00+00:00", "reason": "reviewed"},
+    )
+    assert response.status_code == 401
+
+
+def test_retry_api_enforces_bounded_attempt_budget(monkeypatch, tmp_path):
+    client = make_client(monkeypatch, tmp_path)
+    created = client.post("/scheduler/schedules", json=payload(), headers=auth())
+    schedule_id = created.json()["id"]
+    response = client.post(
+        f"/scheduler/schedules/{schedule_id}/retry",
+        json={
+            "run_at": "2026-11-03T10:00:00+00:00",
+            "reason": "reviewed",
+            "max_retries": 11,
+        },
+        headers=auth(),
+    )
+    assert response.status_code == 422
