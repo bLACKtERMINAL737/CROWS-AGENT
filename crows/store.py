@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 import re
 import sqlite3
@@ -284,24 +285,81 @@ class TaskStore:
                 ("lease_owner", "TEXT"),
                 ("lease_expires_at", "TEXT"),
                 ("attempt_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("priority", "INTEGER NOT NULL DEFAULT 0"),
+                ("idempotency_key", "TEXT"),
+                ("request_hash", "TEXT"),
             ):
                 if column not in task_columns:
                     con.execute(f"ALTER TABLE tasks ADD COLUMN {column} {declaration}")
             con.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tasks_dispatch_queue "
-                "ON tasks(status, created_at, id)"
+                "ON tasks(status, priority DESC, created_at, id)"
+            )
+            con.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idempotency_key "
+                "ON tasks(idempotency_key) WHERE idempotency_key IS NOT NULL"
             )
             con.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tasks_expired_leases "
                 "ON tasks(status, lease_expires_at)"
             )
 
-    def create_task(self, title: str, input_text: str) -> dict[str, Any]:
+    def create_task(
+        self, title: str, input_text: str, *, priority: int = 0,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        if isinstance(priority, bool) or not isinstance(priority, int) or not -10 <= priority <= 10:
+            raise ValueError("priority must be an integer between -10 and 10")
+        if idempotency_key is not None:
+            if not isinstance(idempotency_key, str) or not idempotency_key.strip() or len(idempotency_key) > 256:
+                raise ValueError("idempotency_key must be a non-empty string of at most 256 characters")
+            idempotency_key = idempotency_key.strip()
+        request_hash = hashlib.sha256(
+            json.dumps([title, input_text, priority], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
         now, task_id = utc_now(), str(uuid4())
         with self.connect() as con:
-            con.execute("INSERT INTO tasks(id,title,input_text,status,created_at,updated_at) VALUES(?,?,?,?,?,?)",
-                        (task_id, title, input_text, "queued", now, now))
-        return self.get_task(task_id)  # type: ignore[return-value]
+            con.execute("BEGIN IMMEDIATE")
+            if idempotency_key is not None:
+                existing = con.execute(
+                    "SELECT id,request_hash FROM tasks WHERE idempotency_key=?",
+                    (idempotency_key,),
+                ).fetchone()
+                if existing is not None:
+                    if existing["request_hash"] != request_hash:
+                        raise IdempotencyConflictError(
+                            "Task idempotency key was already used for a different request"
+                        )
+                    saved = con.execute(
+                        "SELECT * FROM tasks WHERE id=?", (existing["id"],)
+                    ).fetchone()
+                    return dict(saved) if saved else None
+            con.execute(
+                "INSERT INTO tasks(id,title,input_text,status,created_at,updated_at,priority,idempotency_key,request_hash) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                (task_id, title, input_text, "queued", now, now, priority, idempotency_key, request_hash),
+            )
+            saved = con.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+            return dict(saved) if saved else None
+
+    def retry_failed_task(self, task_id: str, *, max_attempts: int = 3) -> dict[str, Any] | None:
+        """Explicitly requeue a known failed task; uncertain outcomes are never retried."""
+        if isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or not 1 <= max_attempts <= 10:
+            raise ValueError("max_attempts must be between 1 and 10")
+        now = utc_now()
+        with self.connect() as con:
+            cursor = con.execute(
+                "UPDATE tasks SET status='queued',updated_at=?,result_json=NULL,error_text=NULL "
+                "WHERE id=? AND status='failed' AND attempt_count<?",
+                (now, task_id, max_attempts),
+            )
+            if cursor.rowcount != 1:
+                row = con.execute("SELECT status,attempt_count FROM tasks WHERE id=?", (task_id,)).fetchone()
+                if row is None:
+                    raise KeyError("Task not found")
+                return None
+            saved = con.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+            return dict(saved) if saved else None
 
     def get_task(self, task_id: str) -> dict[str, Any] | None:
         with self.connect() as con:
