@@ -1632,13 +1632,30 @@ def _rebuild_workflow_recovery_diagnostics(checkpoint: dict[str, Any]) -> dict[s
 
 
 @app.get("/agents/workflows")
-def list_agent_workflows(limit: int = 50, offset: int = 0):
-    """List durable workflow runs with stable, bounded pagination."""
+def list_agent_workflows(
+    limit: int = 50,
+    offset: int = 0,
+    status: str | None = None,
+    control_state: str | None = None,
+):
+    """List durable workflows with stable pagination and optional status filters."""
+    valid_statuses = {"running", "succeeded", "partial", "failed", "unknown"}
+    valid_control_states = {"running", "paused", "cancel_requested", "completed"}
     if not 1 <= limit <= 200 or not 0 <= offset <= 1_000_000:
         raise HTTPException(
             status_code=400, detail="limit or offset is outside its allowed range"
         )
-    return {"workflows": store.list_workflows(limit, offset=offset)}
+    if status is not None and status not in valid_statuses:
+        raise HTTPException(status_code=400, detail="invalid workflow status filter")
+    if control_state is not None and control_state not in valid_control_states:
+        raise HTTPException(status_code=400, detail="invalid workflow control-state filter")
+    try:
+        workflows = store.list_workflows(
+            limit, offset=offset, status=status, control_state=control_state
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"workflows": workflows}
 
 
 @app.get("/agents/workflows/{workflow_id}")
