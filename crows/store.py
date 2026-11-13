@@ -5,7 +5,7 @@ import re
 import sqlite3
 import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -684,6 +684,8 @@ class TaskStore:
         status: str | None = None,
         control_state: str | None = None,
         query: str | None = None,
+        created_after: str | None = None,
+        created_before: str | None = None,
     ) -> list[dict[str, Any]]:
         """List workflows with bounded pagination and optional operational filters."""
         valid_statuses = {"running", "succeeded", "partial", "failed", "unknown"}
@@ -701,6 +703,25 @@ class TaskStore:
             if not query:
                 query = None
 
+        def normalize_timestamp(value: str | None, field: str) -> str | None:
+            if value is None:
+                return None
+            if not isinstance(value, str) or len(value) > 64:
+                raise ValueError(f"{field} must be an ISO-8601 timestamp with timezone")
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise ValueError(f"{field} must be an ISO-8601 timestamp with timezone") from exc
+            if parsed.tzinfo is None:
+                raise ValueError(f"{field} must include a timezone")
+            return parsed.astimezone(timezone.utc).isoformat()
+
+        created_after = normalize_timestamp(created_after, "created_after")
+        created_before = normalize_timestamp(created_before, "created_before")
+        if (created_after is not None and created_before is not None
+                and created_after > created_before):
+            raise ValueError("created_after must not be later than created_before")
+
         clauses: list[str] = []
         params: list[Any] = []
         if status is not None:
@@ -716,6 +737,12 @@ class TaskStore:
             clauses.append("crows_casefold(w.goal) LIKE ? ESCAPE '\\'")
             escaped_query = query.casefold().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             params.append(f"%{escaped_query}%")
+        if created_after is not None:
+            clauses.append("w.created_at>=?")
+            params.append(created_after)
+        if created_before is not None:
+            clauses.append("w.created_at<=?")
+            params.append(created_before)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         params.extend((limit, offset))
         with self.connect() as con:
@@ -730,6 +757,68 @@ class TaskStore:
             workflow for row in rows
             if (workflow := self.get_workflow(row["id"])) is not None
         ]
+
+    def workflow_health(
+        self, stale_after_seconds: int = 900, limit: int = 50
+    ) -> dict[str, Any]:
+        """Summarize workflow states and report old, potentially stuck executions.
+
+        This is diagnostic only: it never changes workflow or task state.
+        Paused workflows are intentionally excluded from stale execution alerts.
+        """
+        if not 1 <= stale_after_seconds <= 604800:
+            raise ValueError("stale_after_seconds must be between 1 and 604800")
+        if not 1 <= limit <= 200:
+            raise ValueError("limit must be between 1 and 200")
+        now = datetime.now(timezone.utc)
+        cutoff = (now - timedelta(seconds=stale_after_seconds)).isoformat()
+        with self.connect() as con:
+            status_rows = con.execute(
+                "SELECT status,COUNT(*) AS count FROM agent_workflows GROUP BY status"
+            ).fetchall()
+            control_rows = con.execute(
+                "SELECT COALESCE(wc.state,CASE WHEN w.status='running' "
+                "THEN 'running' ELSE 'completed' END) AS state,COUNT(*) AS count "
+                "FROM agent_workflows AS w LEFT JOIN workflow_controls AS wc "
+                "ON wc.workflow_id=w.id GROUP BY state"
+            ).fetchall()
+            stale_total = con.execute(
+                "SELECT COUNT(*) AS count FROM agent_workflows AS w "
+                "LEFT JOIN workflow_controls AS wc ON wc.workflow_id=w.id "
+                "WHERE w.updated_at<=? "
+                "AND (w.status IN ('running','unknown') OR wc.state='cancel_requested') "
+                "AND COALESCE(wc.state,'')!='paused'",
+                (cutoff,),
+            ).fetchone()["count"]
+            stale_rows = con.execute(
+                "SELECT w.id,w.goal,w.status,w.created_at,w.updated_at,"
+                "COALESCE(wc.state,CASE WHEN w.status='running' "
+                "THEN 'running' ELSE 'completed' END) AS control_state "
+                "FROM agent_workflows AS w LEFT JOIN workflow_controls AS wc "
+                "ON wc.workflow_id=w.id WHERE w.updated_at<=? "
+                "AND (w.status IN ('running','unknown') OR wc.state='cancel_requested') "
+                "AND COALESCE(wc.state,'')!='paused' "
+                "ORDER BY w.updated_at ASC,w.id ASC LIMIT ?",
+                (cutoff, limit),
+            ).fetchall()
+        stale = []
+        for row in stale_rows:
+            item = dict(row)
+            try:
+                updated = datetime.fromisoformat(item["updated_at"])
+                item["age_seconds"] = max(0, int((now - updated).total_seconds()))
+            except (TypeError, ValueError):
+                item["age_seconds"] = None
+            stale.append(item)
+        return {
+            "generated_at": now.isoformat(),
+            "stale_after_seconds": stale_after_seconds,
+            "status_counts": {row["status"]: row["count"] for row in status_rows},
+            "control_state_counts": {row["state"]: row["count"] for row in control_rows},
+            "stale_count": stale_total,
+            "returned_count": len(stale),
+            "stale_workflows": stale,
+        }
 
     def get_workflow_control(self, workflow_id: str) -> str:
         with self.connect() as con:
