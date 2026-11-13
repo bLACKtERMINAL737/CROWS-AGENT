@@ -397,12 +397,21 @@ class TaskStore:
                 raise KeyError("Task not found")
             return False
 
-    def claim_next_task(self, worker_id: str, lease_seconds: int = 300) -> dict[str, Any] | None:
-        """Atomically lease the oldest queued task to one durable queue worker."""
+    def claim_next_task(
+        self, worker_id: str, lease_seconds: int = 300, *,
+        priority_aging_minutes: int = 30,
+    ) -> dict[str, Any] | None:
+        """Atomically lease the highest effective-priority task, aging old work fairly."""
         if not isinstance(worker_id, str) or not worker_id.strip() or len(worker_id) > 128:
             raise ValueError("worker_id must be a non-empty string of at most 128 characters")
         if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, int) or not 1 <= lease_seconds <= 3600:
             raise ValueError("lease_seconds must be between 1 and 3600")
+        if (
+            isinstance(priority_aging_minutes, bool)
+            or not isinstance(priority_aging_minutes, int)
+            or not 1 <= priority_aging_minutes <= 10080
+        ):
+            raise ValueError("priority_aging_minutes must be between 1 and 10080")
         now = datetime.now(timezone.utc)
         now_text = now.isoformat()
         expires = (now.timestamp() + lease_seconds)
@@ -411,7 +420,9 @@ class TaskStore:
             con.execute("BEGIN IMMEDIATE")
             row = con.execute(
                 "SELECT id FROM tasks WHERE status='queued' "
-                "ORDER BY priority DESC, created_at ASC, rowid ASC LIMIT 1"
+                "ORDER BY (priority + CAST(MAX(0, julianday(?) - julianday(created_at)) "
+                "* 1440 / ? AS INTEGER)) DESC, created_at ASC, rowid ASC LIMIT 1",
+                (now_text, priority_aging_minutes),
             ).fetchone()
             if row is None:
                 return None
@@ -495,7 +506,13 @@ class TaskStore:
             ).fetchall()
             oldest = con.execute(
                 "SELECT created_at FROM tasks WHERE status='queued' "
-                "ORDER BY created_at ASC LIMIT 1"
+                "ORDER BY created_at ASC, rowid ASC LIMIT 1"
+            ).fetchone()
+            aging = con.execute(
+                "SELECT MAX(priority + CAST(MAX(0, julianday(?) - julianday(created_at)) "
+                "* 1440 / 30 AS INTEGER)) AS top_effective_priority FROM tasks "
+                "WHERE status='queued'",
+                (utc_now(),),
             ).fetchone()
         counts = {status: 0 for status in STATUSES}
         counts.update({row["status"]: int(row["count"]) for row in rows})
@@ -504,6 +521,13 @@ class TaskStore:
             str(row["priority"]): int(row["count"]) for row in priorities
         }
         counts["oldest_queued_at"] = oldest["created_at"] if oldest else None
+        counts["oldest_queued_age_seconds"] = (
+            max(0, int((datetime.now(timezone.utc) - datetime.fromisoformat(oldest["created_at"])).total_seconds()))
+            if oldest else 0
+        )
+        counts["top_effective_priority_30m_aging"] = (
+            int(aging["top_effective_priority"]) if aging and aging["top_effective_priority"] is not None else None
+        )
         return counts
 
     def set_task_status(self, task_id: str, status: str, result: Any = None, error: str | None = None) -> None:
