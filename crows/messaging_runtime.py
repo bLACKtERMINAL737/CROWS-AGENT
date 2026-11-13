@@ -137,9 +137,15 @@ async def process_inbound_dispatch(
             return "unknown"
         return "completed"
     except asyncio.CancelledError:
+        checkpointed = bool(dispatch.get("reply_text"))
         dispatches.finish(
-            dispatch_id, worker_id=worker_id, state="unknown",
-            diagnostic="Worker stopped during model or reply processing; inspect session and outbox before retrying.",
+            dispatch_id, worker_id=worker_id,
+            state="pending" if checkpointed else "unknown",
+            diagnostic=(
+                "Worker stopped after reply checkpoint; resume durable delivery without another model call."
+                if checkpointed else
+                "Worker stopped before reply checkpoint; inspect outcome before retrying."
+            ),
         )
         raise
     except ProviderNotConfigured:
@@ -177,7 +183,7 @@ async def inbound_agent_worker_loop(
         try:
             expired = dispatches.expire_leases()
             if expired:
-                logger.warning("Marked %s expired inbound dispatch leases unknown", expired)
+                logger.warning("Recovered %s checkpointed inbound replies and marked uncheckpointed expired leases unknown", expired)
             # Claim one item at a time: later leases must not expire while this
             # single worker is waiting on a slow model response.
             claimed = dispatches.claim(worker_id=worker_id, limit=1, lease_seconds=120)
