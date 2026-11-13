@@ -1095,7 +1095,8 @@ def test_workflow_listing_api_search_combines_with_filters(tmp_path, monkeypatch
     store, _router = configure(monkeypatch, tmp_path)
     matching = store.create_workflow("Crows deployment", [])
     store.create_workflow("Crows investigation", [])
-    store.create_workflow("Other deployment", [])
+    other_status = store.create_workflow("Other deployment", [])
+    store.update_workflow(other_status["id"], "failed", results={"tasks": []})
     monkeypatch.setattr(app_module, "store", store)
 
     response = app_module.list_agent_workflows(query="deployment", status="running")
