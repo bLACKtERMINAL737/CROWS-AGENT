@@ -15,8 +15,8 @@ Only tasks whose titles use a registered specialist prefix, such as `[research] 
 
 ## Lease and recovery semantics
 
-- Claims are atomic and ordered oldest-first; a task can be leased by only one worker.
-- Each claim increments `attempt_count`. A worker must present its owner ID and a live lease to execute or finalize the task.
+- Claims are atomic and ordered by priority (10 highest, -10 lowest), then oldest-first within the same priority; a task can be leased by only one worker.
+- Each claim increments `attempt_count`. A worker must present its owner ID and a live lease to execute or finalize the task.\n- Task creation accepts an optional `priority` from -10 to 10 and an optional `idempotency_key`; repeating the same key and payload returns the original task, while reusing the key for a different title, input, or priority returns HTTP 409.\n- `POST /tasks/{task_id}/retry` explicitly requeues only known `failed` tasks, with a bounded `max_attempts` (default 3, maximum 10). `unknown` tasks cannot be retried automatically or through this endpoint.
 - Workers renew 120-second leases every 30 seconds while waiting for execution capacity or running a specialist.
 - A lease that expires is changed to `unknown`, not requeued. An interrupted task may already have performed work, so automatic replay could duplicate it. Inspect and explicitly reconcile uncertain work before creating a new task.
 - Completion is fenced by the current lease owner and expiry. A stale worker cannot overwrite a newer or uncertain outcome.
@@ -26,4 +26,4 @@ The worker shares the existing server-process ownership lock. SQLite is the dura
 
 ## Queue health
 
-`GET /tasks/queue/metrics` returns aggregate task counts and total claim attempts. It intentionally omits task IDs, worker IDs, and lease tokens.
+`GET /tasks/queue/metrics` returns aggregate task counts, attempts, queued counts by priority, and the oldest queued timestamp. It intentionally omits task IDs, worker IDs, and lease tokens.
