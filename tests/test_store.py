@@ -992,3 +992,17 @@ def test_concurrent_queue_workers_receive_distinct_task_leases(tmp_path: Path):
     assert len(claimed_ids) == 2
     assert len(set(claimed_ids)) == 2
     assert {item["lease_owner"] for item in claims} == {"worker-one", "worker-two"}
+
+
+def test_startup_recovery_clears_interrupted_worker_lease(tmp_path: Path):
+    store = TaskStore(tmp_path / "startup-task-lease.sqlite3")
+    task = store.create_task("interrupted", "inspect after restart")
+    claimed = store.claim_next_task("previous-process", lease_seconds=300)
+    assert claimed["id"] == task["id"]
+
+    assert store.mark_interrupted_as_unknown() == 1
+    saved = store.get_task(task["id"])
+    assert saved["status"] == "unknown"
+    assert saved["lease_owner"] is None
+    assert saved["lease_expires_at"] is None
+    assert not store.finish_task_lease(task["id"], "previous-process", "succeeded")
