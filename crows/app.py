@@ -951,6 +951,17 @@ async def scheduler_worker_loop() -> None:
                         continue
                     task = store.create_task(title, str(item["input_text"]))
                     task_id = task["id"]
+                    # Persist the schedule -> task relationship before the
+                    # specialist can perform any external side effects. A
+                    # process crash from this point is now diagnosable.
+                    if not scheduler_store.attach_task_to_claim(
+                        schedule_id, worker_id, task_id
+                    ):
+                        store.set_task_status(
+                            task_id, "failed",
+                            error="Scheduler lease was lost before specialist execution began.",
+                        )
+                        continue
                     try:
                         await run_agent_task_with_lease_renewal(task_id, schedule_id, worker_id)
                     except asyncio.CancelledError:

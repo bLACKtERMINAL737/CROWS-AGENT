@@ -267,6 +267,24 @@ class SchedulerStore:
                     claimed.append(dict(claimed_row))
         return claimed
 
+    def attach_task_to_claim(
+        self, schedule_id: str, worker_id: str, task_id: str, *,
+        now: str | datetime | None = None,
+    ) -> bool:
+        """Durably link a created task before execution can produce side effects."""
+        task_id = task_id.strip()
+        if not task_id or len(task_id) > 200:
+            raise ValueError("task_id must be non-blank and at most 200 characters")
+        instant = _utc(now or datetime.now(timezone.utc))
+        with self.connect() as con:
+            cursor = con.execute(
+                "UPDATE scheduled_tasks SET task_id=?,updated_at=? "
+                "WHERE id=? AND status='running' AND lease_owner=? "
+                "AND lease_expires_at>? AND task_id IS NULL",
+                (task_id, instant, schedule_id, worker_id, instant),
+            )
+            return cursor.rowcount == 1
+
     def renew_claim(self, schedule_id: str, worker_id: str, *,
                     lease_seconds: int = 300,
                     now: str | datetime | None = None) -> bool:

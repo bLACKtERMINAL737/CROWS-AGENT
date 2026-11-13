@@ -311,3 +311,42 @@ def test_failed_schedule_retry_budget_is_bounded(tmp_path):
         item["id"], "2026-01-10T00:00:00+00:00", "exhausted", max_retries=3
     ) is None
     assert len(store.list_retry_audit(item["id"])) == 3
+
+
+def test_attach_task_to_claim_is_durable_and_fenced(tmp_path):
+    store = SchedulerStore(tmp_path / "scheduler-task-link.sqlite3")
+    schedule = store.create_schedule(
+        "Linked", "Run linked task", "2026-01-01T00:00:00+00:00", "linked-task"
+    )
+    claimed = store.claim_due(
+        "worker-a", now="2026-01-02T00:00:00+00:00", lease_seconds=60
+    )
+    assert len(claimed) == 1
+    assert store.attach_task_to_claim(
+        schedule["id"], "worker-b", "task-wrong",
+        now="2026-01-02T00:00:10+00:00",
+    ) is False
+    assert store.attach_task_to_claim(
+        schedule["id"], "worker-a", "task-linked",
+        now="2026-01-02T00:00:10+00:00",
+    ) is True
+    assert SchedulerStore(store.db_path).get_schedule(schedule["id"])["task_id"] == "task-linked"
+    assert store.attach_task_to_claim(
+        schedule["id"], "worker-a", "task-replacement",
+        now="2026-01-02T00:00:11+00:00",
+    ) is False
+
+
+def test_attach_task_to_claim_rejects_expired_lease(tmp_path):
+    store = SchedulerStore(tmp_path / "scheduler-task-link-expired.sqlite3")
+    schedule = store.create_schedule(
+        "Expired", "Do not attach", "2026-01-01T00:00:00+00:00", "expired-link"
+    )
+    store.claim_due(
+        "worker-a", now="2026-01-02T00:00:00+00:00", lease_seconds=5
+    )
+    assert store.attach_task_to_claim(
+        schedule["id"], "worker-a", "task-late",
+        now="2026-01-02T00:00:06+00:00",
+    ) is False
+    assert store.get_schedule(schedule["id"])["task_id"] is None

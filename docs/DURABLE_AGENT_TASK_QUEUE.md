@@ -37,3 +37,11 @@ The worker shares the existing server-process ownership lock. SQLite is the dura
 - Each retry increments the durable `retry_count` and records the previous task ID, reason, requested time, retry number, and timestamp in the schedule retry audit.
 - `GET /scheduler/schedules/{id}/retry-audit` exposes that history for operator review.
 - Running, scheduled, completed, cancelled, and especially `unknown` schedules cannot use this retry path. Unknown execution must be reconciled against the task journal/provider evidence first; it is never blindly replayed.
+
+
+## Scheduler task linkage and crash diagnosis
+
+- Immediately after creating a specialist task, the scheduler atomically attaches its task ID to the running schedule under the live lease owner.
+- The worker does not start specialist execution unless that durable link succeeds.
+- A crash after task creation can therefore be diagnosed through the schedule's task ID and task journal, rather than leaving an untraceable queued task.
+- Attachment is single-assignment and lease-fenced: a stale worker cannot replace the link or attach after lease expiry.
