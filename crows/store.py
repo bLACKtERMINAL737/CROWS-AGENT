@@ -1113,6 +1113,11 @@ class TaskStore:
             raise ValueError("dispatch_id is invalid")
         user_id, assistant_id = f"inbound-{dispatch_id}-user", f"inbound-{dispatch_id}-assistant"
         user_created_at, assistant_created_at = utc_now(), utc_now()
+        if assistant_created_at <= user_created_at:
+            from datetime import timedelta
+            assistant_created_at = (
+                datetime.fromisoformat(user_created_at) + timedelta(microseconds=1)
+            ).isoformat()
         with self.connect() as con:
             con.execute("BEGIN IMMEDIATE")
             if not con.execute("SELECT 1 FROM sessions WHERE id=?", (session_id,)).fetchone():
