@@ -358,7 +358,8 @@ class TaskStore:
         now = utc_now()
         with self.connect() as con:
             cursor = con.execute(
-                "UPDATE tasks SET status='queued',updated_at=?,result_json=NULL,error_text=NULL "
+                "UPDATE tasks SET status='queued',updated_at=?,result_json=NULL,error_text=NULL,"
+                "lease_owner=NULL,lease_expires_at=NULL "
                 "WHERE id=? AND status='failed' AND attempt_count<?",
                 (now, task_id, max_attempts),
             )
