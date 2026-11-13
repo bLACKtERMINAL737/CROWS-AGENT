@@ -8,12 +8,12 @@ from crows.agent_concurrency import agent_execution_slot
 @pytest.mark.asyncio
 async def test_cancelled_waiter_does_not_consume_global_execution_slot():
     entered = asyncio.Event()
-    release = asyncio.Event()
+    blocked = asyncio.Event()
 
     async def hold_slot():
         async with agent_execution_slot(1):
             entered.set()
-            await release.wait()
+            await blocked.wait()
 
     holder = asyncio.create_task(hold_slot())
     await entered.wait()
@@ -28,8 +28,9 @@ async def test_cancelled_waiter_does_not_consume_global_execution_slot():
     with pytest.raises(asyncio.CancelledError):
         await waiter
 
-    release.set()
-    await holder
+    holder.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await holder
 
     async with agent_execution_slot(1):
         assert True
