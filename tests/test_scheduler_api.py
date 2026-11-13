@@ -248,3 +248,27 @@ def test_retry_api_enforces_bounded_attempt_budget(monkeypatch, tmp_path):
         headers=auth(),
     )
     assert response.status_code == 422
+
+
+
+def test_recurring_schedule_api_exposes_bounded_configuration_and_history(monkeypatch, tmp_path):
+    client = make_client(monkeypatch, tmp_path)
+    created = client.post("/scheduler/schedules",
+        json=payload(recurrence_interval_seconds=3600, max_occurrences=4), headers=auth())
+    assert created.status_code == 201
+    item = created.json()
+    assert item["recurrence_interval_seconds"] == 3600
+    assert item["max_occurrences"] == 4
+    assert item["occurrence_count"] == 0
+    history = client.get(f"/scheduler/schedules/{item['id']}/execution-history", headers=auth())
+    assert history.status_code == 200 and history.json() == {"entries": []}
+
+
+def test_recurring_schedule_api_rejects_partial_or_unbounded_configuration(monkeypatch, tmp_path):
+    client = make_client(monkeypatch, tmp_path)
+    partial = client.post("/scheduler/schedules",
+        json=payload(recurrence_interval_seconds=3600), headers=auth())
+    assert partial.status_code == 422
+    too_many = client.post("/scheduler/schedules",
+        json=payload(recurrence_interval_seconds=3600, max_occurrences=1001), headers=auth())
+    assert too_many.status_code == 422

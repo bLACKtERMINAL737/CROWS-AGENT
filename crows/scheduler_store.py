@@ -72,6 +72,31 @@ class SchedulerStore:
                     "ALTER TABLE scheduled_tasks ADD COLUMN retry_count "
                     "INTEGER NOT NULL DEFAULT 0"
                 )
+            for name, declaration in {
+                "recurrence_interval_seconds": "INTEGER",
+                "max_occurrences": "INTEGER",
+                "occurrence_count": "INTEGER NOT NULL DEFAULT 0",
+            }.items():
+                if name not in columns:
+                    con.execute(f"ALTER TABLE scheduled_tasks ADD COLUMN {name} {declaration}")
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS schedule_execution_history (
+                  id TEXT PRIMARY KEY,
+                  schedule_id TEXT NOT NULL REFERENCES scheduled_tasks(id),
+                  occurrence_number INTEGER NOT NULL,
+                  task_id TEXT,
+                  status TEXT NOT NULL,
+                  scheduled_for TEXT NOT NULL,
+                  finished_at TEXT NOT NULL,
+                  result_json TEXT,
+                  error_text TEXT,
+                  UNIQUE(schedule_id, occurrence_number)
+                )
+            """)
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_schedule_execution_history_schedule "
+                "ON schedule_execution_history(schedule_id, occurrence_number)"
+            )
             con.execute("""
                 CREATE TABLE IF NOT EXISTS schedule_retry_audit (
                   id TEXT PRIMARY KEY,
@@ -97,7 +122,9 @@ class SchedulerStore:
 
     def create_schedule(
         self, title: str, input_text: str, run_at: str | datetime,
-        idempotency_key: str,
+        idempotency_key: str, *,
+        recurrence_interval_seconds: int | None = None,
+        max_occurrences: int | None = None,
     ) -> dict[str, Any]:
         title, input_text, idempotency_key = title.strip(), input_text.strip(), idempotency_key.strip()
         if not title or not input_text or not idempotency_key:
@@ -105,6 +132,12 @@ class SchedulerStore:
         if len(title) > 200 or len(input_text) > 20_000 or len(idempotency_key) > 256:
             raise ValueError("schedule field exceeds its maximum length")
         due = _utc(run_at)
+        if (recurrence_interval_seconds is None) != (max_occurrences is None):
+            raise ValueError("recurrence_interval_seconds and max_occurrences must be supplied together")
+        if recurrence_interval_seconds is not None and not 60 <= recurrence_interval_seconds <= 31_536_000:
+            raise ValueError("recurrence_interval_seconds must be between 60 and 31536000")
+        if max_occurrences is not None and not 2 <= max_occurrences <= 1000:
+            raise ValueError("max_occurrences must be between 2 and 1000")
         now, schedule_id = datetime.now(timezone.utc).isoformat(), str(uuid4())
         with self.connect() as con:
             con.execute("BEGIN IMMEDIATE")
@@ -112,14 +145,21 @@ class SchedulerStore:
                 "SELECT * FROM scheduled_tasks WHERE idempotency_key=?", (idempotency_key,)
             ).fetchone()
             if existing:
-                if (existing["title"], existing["input_text"], existing["run_at"]) != (title, input_text, due):
+                if (
+                    existing["title"], existing["input_text"], existing["run_at"],
+                    existing["recurrence_interval_seconds"], existing["max_occurrences"],
+                ) != (
+                    title, input_text, due, recurrence_interval_seconds, max_occurrences,
+                ):
                     raise ValueError("idempotency key already belongs to a different schedule")
                 return dict(existing)
             con.execute(
                 "INSERT INTO scheduled_tasks "
-                "(id,idempotency_key,title,input_text,run_at,status,created_at,updated_at) "
-                "VALUES(?,?,?,?,?,'scheduled',?,?)",
-                (schedule_id, idempotency_key, title, input_text, due, now, now),
+                "(id,idempotency_key,title,input_text,run_at,status,created_at,updated_at,"
+                "recurrence_interval_seconds,max_occurrences) "
+                "VALUES(?,?,?,?,?,'scheduled',?,?,?,?)",
+                (schedule_id, idempotency_key, title, input_text, due, now, now,
+                 recurrence_interval_seconds, max_occurrences),
             )
             row = con.execute("SELECT * FROM scheduled_tasks WHERE id=?", (schedule_id,)).fetchone()
             return dict(row)
@@ -309,13 +349,60 @@ class SchedulerStore:
             raise ValueError("invalid terminal schedule status")
         instant = _utc(now or datetime.now(timezone.utc))
         with self.connect() as con:
-            cursor = con.execute(
-                "UPDATE scheduled_tasks SET status=?,task_id=COALESCE(?,task_id),"
-                "result_json=?,error_text=?,lease_owner=NULL,lease_expires_at=NULL,updated_at=? "
-                "WHERE id=? AND status='running' AND lease_owner=? AND lease_expires_at>?",
-                (status, task_id, result_json, error_text, instant, schedule_id, worker_id, instant),
-            )
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute(
+                "SELECT run_at,recurrence_interval_seconds,max_occurrences,occurrence_count,task_id "
+                "FROM scheduled_tasks WHERE id=? AND status='running' AND lease_owner=? "
+                "AND lease_expires_at>?", (schedule_id, worker_id, instant),
+            ).fetchone()
+            if row is None:
+                return False
+            linked_task_id = task_id or row["task_id"]
+            interval, maximum = row["recurrence_interval_seconds"], row["max_occurrences"]
+            occurrence = int(row["occurrence_count"] or 0) + 1
+            if interval is not None:
+                con.execute(
+                    "INSERT INTO schedule_execution_history "
+                    "(id,schedule_id,occurrence_number,task_id,status,scheduled_for,"
+                    "finished_at,result_json,error_text) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (str(uuid4()), schedule_id, occurrence, linked_task_id, status,
+                     row["run_at"], instant, result_json, error_text),
+                )
+            if status == "completed" and interval is not None and occurrence < int(maximum):
+                next_run = datetime.fromisoformat(row["run_at"]) + timedelta(seconds=int(interval))
+                finished = datetime.fromisoformat(instant)
+                while next_run <= finished:
+                    next_run += timedelta(seconds=int(interval))
+                cursor = con.execute(
+                    "UPDATE scheduled_tasks SET status='scheduled',run_at=?,task_id=NULL,"
+                    "result_json=NULL,error_text=NULL,lease_owner=NULL,lease_expires_at=NULL,"
+                    "occurrence_count=?,updated_at=? WHERE id=? AND status='running' "
+                    "AND lease_owner=? AND lease_expires_at>?",
+                    (next_run.isoformat(), occurrence, instant, schedule_id, worker_id, instant),
+                )
+            else:
+                cursor = con.execute(
+                    "UPDATE scheduled_tasks SET status=?,task_id=COALESCE(?,task_id),"
+                    "result_json=?,error_text=?,lease_owner=NULL,lease_expires_at=NULL,"
+                    "occurrence_count=CASE WHEN recurrence_interval_seconds IS NOT NULL "
+                    "THEN ? ELSE occurrence_count END,updated_at=? "
+                    "WHERE id=? AND status='running' AND lease_owner=? AND lease_expires_at>?",
+                    (status, linked_task_id, result_json, error_text,
+                     occurrence if interval is not None else 0, instant,
+                     schedule_id, worker_id, instant),
+                )
             return cursor.rowcount == 1
+
+    def list_execution_history(self, schedule_id: str) -> list[dict[str, Any]]:
+        with self.connect() as con:
+            if con.execute("SELECT 1 FROM scheduled_tasks WHERE id=?", (schedule_id,)).fetchone() is None:
+                raise KeyError("Schedule not found")
+            rows = con.execute(
+                "SELECT occurrence_number,task_id,status,scheduled_for,finished_at,"
+                "result_json,error_text FROM schedule_execution_history "
+                "WHERE schedule_id=? ORDER BY occurrence_number", (schedule_id,)
+            ).fetchall()
+            return [dict(row) for row in rows]
 
     def record_reconciliation(self, schedule_id: str, note: str, evidence: str) -> dict[str, Any]:
         note, evidence = note.strip(), evidence.strip()
