@@ -713,8 +713,8 @@ class TaskStore:
             )
             params.append(control_state)
         if query is not None:
-            clauses.append("crows_casefold(w.goal) LIKE ? ESCAPE '\\\\'")
-            escaped_query = query.casefold().replace("\\\\", "\\\\\\\\").replace("%", "\\\\%").replace("_", "\\\\_")
+            clauses.append("crows_casefold(w.goal) LIKE ? ESCAPE '\\'")
+            escaped_query = query.casefold().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             params.append(f"%{escaped_query}%")
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         params.extend((limit, offset))
