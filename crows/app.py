@@ -1638,6 +1638,8 @@ def list_agent_workflows(
     status: str | None = None,
     control_state: str | None = None,
     query: str | None = None,
+    created_after: str | None = None,
+    created_before: str | None = None,
 ):
     """List durable workflows with stable pagination and optional filters."""
     valid_statuses = {"running", "succeeded", "partial", "failed", "unknown"}
@@ -1654,11 +1656,23 @@ def list_agent_workflows(
         raise HTTPException(status_code=400, detail="workflow query must be at most 200 characters")
     try:
         workflows = store.list_workflows(
-            limit, offset=offset, status=status, control_state=control_state, query=query
+            limit, offset=offset, status=status, control_state=control_state,
+            query=query, created_after=created_after, created_before=created_before,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"workflows": workflows}
+
+
+@app.get("/agents/workflows/health")
+def get_agent_workflow_health(stale_after_seconds: int = 900, limit: int = 50):
+    """Return read-only workflow health counts and potentially stale executions."""
+    try:
+        return store.workflow_health(
+            stale_after_seconds=stale_after_seconds, limit=limit
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/agents/workflows/{workflow_id}")
