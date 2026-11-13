@@ -782,6 +782,14 @@ class TaskStore:
                 "FROM agent_workflows AS w LEFT JOIN workflow_controls AS wc "
                 "ON wc.workflow_id=w.id GROUP BY state"
             ).fetchall()
+            stale_total = con.execute(
+                "SELECT COUNT(*) AS count FROM agent_workflows AS w "
+                "LEFT JOIN workflow_controls AS wc ON wc.workflow_id=w.id "
+                "WHERE w.updated_at<=? "
+                "AND (w.status IN ('running','unknown') OR wc.state='cancel_requested') "
+                "AND COALESCE(wc.state,'')!='paused'",
+                (cutoff,),
+            ).fetchone()["count"]
             stale_rows = con.execute(
                 "SELECT w.id,w.goal,w.status,w.created_at,w.updated_at,"
                 "COALESCE(wc.state,CASE WHEN w.status='running' "
@@ -807,7 +815,8 @@ class TaskStore:
             "stale_after_seconds": stale_after_seconds,
             "status_counts": {row["status"]: row["count"] for row in status_rows},
             "control_state_counts": {row["state"]: row["count"] for row in control_rows},
-            "stale_count": len(stale),
+            "stale_count": stale_total,
+            "returned_count": len(stale),
             "stale_workflows": stale,
         }
 
