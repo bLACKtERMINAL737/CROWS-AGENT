@@ -977,6 +977,9 @@ def test_existing_task_database_migrates_lease_columns_without_losing_tasks(tmp_
     assert migrated["lease_owner"] is None
     assert migrated["lease_expires_at"] is None
     assert migrated["attempt_count"] == 0
+    assert migrated["priority"] == 0
+    assert migrated["idempotency_key"] is None
+    assert migrated["request_hash"] is None
     assert store.claim_next_task("migration-worker")["id"] == "legacy-task"
 
 
