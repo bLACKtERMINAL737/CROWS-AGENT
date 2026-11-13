@@ -1076,3 +1076,31 @@ def test_workflow_listing_api_filters_and_rejects_invalid_filters(tmp_path, monk
     with pytest.raises(HTTPException) as error:
         app_module.list_agent_workflows(control_state="invalid")
     assert error.value.status_code == 400
+
+
+def test_workflow_listing_searches_goal_case_insensitively_and_escapes_wildcards(tmp_path, monkeypatch):
+    store, _router = configure(monkeypatch, tmp_path)
+    matching = store.create_workflow("Deploy Crows Agent", [])
+    store.create_workflow("Review unrelated task", [])
+    wildcard = store.create_workflow("Literal 100% coverage", [])
+
+    assert [item["id"] for item in store.list_workflows(query="CROWS")] == [matching["id"]]
+    assert [item["id"] for item in store.list_workflows(query="100%")] == [wildcard["id"]]
+    assert store.list_workflows(query="   ") == store.list_workflows()
+    with pytest.raises(ValueError, match="workflow query"):
+        store.list_workflows(query="x" * 201)
+
+
+def test_workflow_listing_api_search_combines_with_filters(tmp_path, monkeypatch):
+    store, _router = configure(monkeypatch, tmp_path)
+    matching = store.create_workflow("Crows deployment", [])
+    store.create_workflow("Crows investigation", [])
+    other_status = store.create_workflow("Other deployment", [])
+    store.update_workflow(other_status["id"], "failed", results={"tasks": []})
+    monkeypatch.setattr(app_module, "store", store)
+
+    response = app_module.list_agent_workflows(query="deployment", status="running")
+    assert [item["id"] for item in response["workflows"]] == [matching["id"]]
+    with pytest.raises(HTTPException) as error:
+        app_module.list_agent_workflows(query="x" * 201)
+    assert error.value.status_code == 400
