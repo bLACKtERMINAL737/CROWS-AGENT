@@ -400,7 +400,7 @@ def test_recurring_schedule_requeues_after_success_and_skips_missed_ticks(tmp_pa
         "Recurring report", "Run report", "2026-01-01T00:00:00+00:00",
         "recurring-report", recurrence_interval_seconds=3600, max_occurrences=3,
     )
-    claimed = store.claim_due("worker-a", now="2026-01-01T00:01:00+00:00", lease_seconds=300)
+    claimed = store.claim_due("worker-a", now="2026-01-01T00:01:00+00:00", lease_seconds=10_000)
     assert len(claimed) == 1
     assert store.attach_task_to_claim(item["id"], "worker-a", "task-1",
                                       now="2026-01-01T00:01:01+00:00")
