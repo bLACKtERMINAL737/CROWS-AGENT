@@ -404,6 +404,11 @@ def test_recurring_schedule_requeues_after_success_and_skips_missed_ticks(tmp_pa
     assert len(claimed) == 1
     assert store.attach_task_to_claim(item["id"], "worker-a", "task-1",
                                       now="2026-01-01T00:01:01+00:00")
+    # Simulate a long-running task whose worker periodically renews its lease.
+    assert store.renew_claim(item["id"], "worker-a", lease_seconds=3600,
+                             now="2026-01-01T00:59:00+00:00")
+    assert store.renew_claim(item["id"], "worker-a", lease_seconds=3600,
+                             now="2026-01-01T01:58:00+00:00")
     assert store.finish_claim(item["id"], "worker-a", "completed",
                               result_json='{"ok":true}', now="2026-01-01T02:30:00+00:00")
     saved = store.get_schedule(item["id"])
