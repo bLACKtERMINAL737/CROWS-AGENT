@@ -985,15 +985,21 @@ async def test_global_agent_concurrency_is_shared_across_workflows(tmp_path, mon
         }
 
     monkeypatch.setattr(app_module, "_run_agent_task_unlimited", fake_run)
-    first, second = await asyncio.gather(
+    direct_task = store.create_task(
+        "[research] Direct task outside orchestration",
+        "Must share the same server-wide execution budget",
+    )
+    first, second, direct = await asyncio.gather(
         app_module.orchestrate_agent_work(
             app_module.AgentPlanRequest(goal="First concurrent workflow")
         ),
         app_module.orchestrate_agent_work(
             app_module.AgentPlanRequest(goal="Second concurrent workflow")
         ),
+        app_module.run_agent_task(direct_task["id"]),
     )
 
     assert first["status"] == second["status"] == "succeeded"
+    assert direct["status"] == "succeeded"
     assert first["global_max_concurrency"] == second["global_max_concurrency"] == 2
     assert 1 < peak_active <= 2
