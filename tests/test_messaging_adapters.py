@@ -142,3 +142,30 @@ async def test_adapters_preserve_rate_limit_retry_after():
     )
     assert receipt.status_code == 429
     assert receipt.retry_after_seconds == 17
+
+
+@pytest.mark.asyncio
+async def test_telegram_rate_limit_reads_retry_after_from_bot_api_parameters():
+    adapter = TelegramOutboundAdapter(lambda: ("bot-token", ""))
+    FakeClient.response = FakeResponse(429, {"ok": False, "parameters": {"retry_after": 23}})
+    receipt = await adapter.send(OutboundTransportMessage("telegram", "777", "hello", "key-7"))
+    assert receipt.retry_after_seconds == 23
+
+
+@pytest.mark.asyncio
+async def test_discord_rate_limit_accepts_fractional_json_retry_after_and_caps_delay():
+    adapter = DiscordOutboundAdapter(lambda: "https://discord.com/api/webhooks/123/secret")
+    FakeClient.response = FakeResponse(429, {"message": "rate limited", "retry_after": 1.25})
+    receipt = await adapter.send(OutboundTransportMessage("discord", "configured-webhook", "hello", "key-8"))
+    assert receipt.retry_after_seconds == 2
+    FakeClient.response = FakeResponse(429, {"retry_after": 900})
+    receipt = await adapter.send(OutboundTransportMessage("discord", "configured-webhook", "hello", "key-9"))
+    assert receipt.retry_after_seconds == 300
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_uses_default_for_invalid_header_and_survives_invalid_json():
+    adapter = TelegramOutboundAdapter(lambda: ("bot-token", ""))
+    FakeClient.response = FakeResponse(429, None, {"Retry-After": "not-a-delay"})
+    receipt = await adapter.send(OutboundTransportMessage("telegram", "777", "hello", "key-10"))
+    assert receipt.retry_after_seconds == 5

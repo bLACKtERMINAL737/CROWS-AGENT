@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+import math
 import re
 from typing import Callable
 import json
@@ -48,8 +51,8 @@ class TelegramOutboundAdapter(OutboundTransportAdapter):
         payload = {"chat_id": message.delivery_target, "text": message.text}
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
             response = await client.post(url, json=payload)
-        retry_after = _retry_after(response)
-        body = response.json() if response.content else {}
+        body = _response_body(response)
+        retry_after = _retry_after(response, body)
         ok = response.is_success and isinstance(body, dict) and body.get("ok") is True
         result = body.get("result") if isinstance(body, dict) else None
         provider_id = str(result.get("message_id")) if ok and isinstance(result, dict) and result.get("message_id") is not None else None
@@ -126,13 +129,49 @@ class OutboundTransportRegistry:
         return sorted(self._adapters)
 
 
-def _retry_after(response: httpx.Response) -> int | None:
+def _response_body(response: httpx.Response) -> dict:
+    if not response.content:
+        return {}
+    try:
+        body = response.json()
+    except ValueError:
+        if response.status_code == 429:
+            return {}
+        raise
+    return body if isinstance(body, dict) else {}
+
+
+def _retry_after(response: httpx.Response, body: dict | None = None) -> int | None:
+    """Read provider and HTTP rate-limit hints, returning a bounded delay in seconds."""
     if response.status_code != 429:
         return None
-    try:
-        return int(response.headers.get("Retry-After", "5"))
-    except (TypeError, ValueError):
-        return 5
+
+    candidates = [response.headers.get("Retry-After")]
+    if isinstance(body, dict):
+        parameters = body.get("parameters")
+        if isinstance(parameters, dict):
+            candidates.append(parameters.get("retry_after"))  # Telegram Bot API
+        candidates.append(body.get("retry_after"))  # Discord API
+
+    for candidate in candidates:
+        if isinstance(candidate, bool) or candidate is None:
+            continue
+        try:
+            seconds = float(candidate)
+            if math.isfinite(seconds):
+                return min(max(math.ceil(seconds), 1), 300)
+        except (TypeError, ValueError, OverflowError):
+            pass
+        if isinstance(candidate, str):
+            try:
+                retry_at = parsedate_to_datetime(candidate)
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=timezone.utc)
+                seconds = math.ceil((retry_at - datetime.now(timezone.utc)).total_seconds())
+                return min(max(seconds, 1), 300)
+            except (TypeError, ValueError, OverflowError):
+                continue
+    return 5
 
 
 def build_outbound_adapter_registry(
