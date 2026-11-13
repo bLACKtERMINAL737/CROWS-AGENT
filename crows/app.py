@@ -345,6 +345,11 @@ class ScheduleRescheduleRequest(BaseModel):
     run_at: str = Field(min_length=1, max_length=80)
 
 
+class ScheduleRetryRequest(BaseModel):
+    run_at: str = Field(min_length=1, max_length=80)
+    reason: str = Field(min_length=1, max_length=2000)
+
+
 
 
 class AgentPlanRequest(BaseModel):
@@ -2993,6 +2998,32 @@ def reschedule_schedule(schedule_id: str, request: ScheduleRescheduleRequest):
             detail="Only pending schedules can be rescheduled",
         )
     return _public_schedule(saved)
+
+
+@app.post("/scheduler/schedules/{schedule_id}/retry")
+def retry_failed_schedule(schedule_id: str, request: ScheduleRetryRequest):
+    try:
+        saved = scheduler_store.retry_failed_schedule(
+            schedule_id, request.run_at, request.reason
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Schedule not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if saved is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Only definitively failed schedules can be retried; reconcile unknown work first",
+        )
+    return _public_schedule(saved)
+
+
+@app.get("/scheduler/schedules/{schedule_id}/retry-audit")
+def schedule_retry_audit(schedule_id: str):
+    try:
+        return {"entries": scheduler_store.list_retry_audit(schedule_id)}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Schedule not found") from exc
 
 
 @app.post("/scheduler/schedules/{schedule_id}/reconcile")

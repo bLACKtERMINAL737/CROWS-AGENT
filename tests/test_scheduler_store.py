@@ -236,3 +236,47 @@ def test_claim_due_respects_limit_and_due_order(tmp_path: Path):
     assert [item["title"] for item in claimed] == ["Task 1", "Task 2"]
     assert store.metrics()["by_status"]["scheduled"] == 1
     assert store.metrics()["by_status"]["running"] == 2
+
+
+def test_retry_failed_schedule_is_explicit_audited_and_preserves_history(tmp_path):
+    store = SchedulerStore(tmp_path / "schedule-retry.sqlite3")
+    item = store.create_schedule(
+        "[research] Retry report", "Run report", "2026-01-01T00:00:00+00:00", "retry-report"
+    )
+    store.claim_due("worker-a", now="2026-01-02T00:00:00+00:00")
+    assert store.finish_claim(
+        item["id"], "worker-a", "failed", task_id="failed-task-1",
+        error_text="Specialist returned a definitive failure",
+        now="2026-01-02T00:01:00+00:00",
+    )
+
+    retried = store.retry_failed_schedule(
+        item["id"], "2026-01-03T12:00:00+02:00", "Operator reviewed failed task journal"
+    )
+    assert retried["status"] == "scheduled"
+    assert retried["run_at"] == "2026-01-03T10:00:00+00:00"
+    assert retried["retry_count"] == 1
+    assert retried["task_id"] is None
+    audit = store.list_retry_audit(item["id"])
+    assert len(audit) == 1
+    assert audit[0]["previous_task_id"] == "failed-task-1"
+    assert audit[0]["reason"] == "Operator reviewed failed task journal"
+    assert store.retry_failed_schedule(
+        item["id"], "2026-01-04T00:00:00+00:00", "second attempt"
+    ) is None
+
+
+def test_retry_failed_schedule_never_replays_unknown_or_running_work(tmp_path):
+    store = SchedulerStore(tmp_path / "schedule-retry-guard.sqlite3")
+    unknown = store.create_schedule(
+        "Unknown", "uncertain", "2026-01-01T00:00:00+00:00", "unknown-retry"
+    )
+    store.claim_due("worker-a", now="2026-01-02T00:00:00+00:00", lease_seconds=1)
+    store.mark_expired_claims_unknown(now="2026-01-02T00:00:02+00:00")
+    assert store.retry_failed_schedule(
+        unknown["id"], "2026-01-04T00:00:00+00:00", "try again"
+    ) is None
+    with pytest.raises(ValueError, match="retry reason"):
+        store.retry_failed_schedule(
+            unknown["id"], "2026-01-04T00:00:00+00:00", " "
+        )
