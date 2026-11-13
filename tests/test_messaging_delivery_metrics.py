@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from cryptography.fernet import Fernet
+
 from crows.messaging_store import MessagingStore
 
 
@@ -43,7 +45,8 @@ def test_delivery_metrics_returns_zero_counts_for_empty_store(tmp_path: Path):
     assert metrics["recent_failures"] == []
 
 
-def test_delivery_metrics_recent_failures_include_failure_code(tmp_path: Path):
+def test_delivery_metrics_recent_failures_include_failure_code(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("CROWS_MESSAGING_TARGET_KEY", Fernet.generate_key().decode())
     store = MessagingStore(tmp_path / "failure-metrics.sqlite3")
     queued = store.queue_outbound(channel="discord", provider_user_id="u", text="private", idempotency_key="k")
     message_id = queued["message"]["id"]

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from cryptography.fernet import Fernet
 
 from crows import app as app_module
 from crows.messaging_store import MessagingStore
@@ -75,7 +76,8 @@ def test_attention_endpoint_is_bounded_and_returns_sanitized_records(
         app_module.messaging_outbox_attention(limit=101)
 
 
-def test_attention_includes_safe_failure_code_without_private_payload(tmp_path: Path):
+def test_attention_includes_safe_failure_code_without_private_payload(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("CROWS_MESSAGING_TARGET_KEY", Fernet.generate_key().decode())
     store = MessagingStore(tmp_path / "failure-code.sqlite3")
     queued = store.queue_outbound(
         channel="telegram", provider_user_id="secret-recipient",
