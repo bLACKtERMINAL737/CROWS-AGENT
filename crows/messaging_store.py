@@ -683,10 +683,10 @@ class MessagingStore:
                    ORDER BY channel, status"""
             ).fetchall()
             recent_failures = con.execute(
-                """SELECT channel, status, COUNT(*) AS count, MAX(updated_at) AS latest_at
+                """SELECT channel, status, failure_code, COUNT(*) AS count, MAX(updated_at) AS latest_at
                    FROM messaging_messages
                    WHERE direction='outbound' AND status IN ('failed','unknown')
-                   GROUP BY channel, status
+                   GROUP BY channel, status, failure_code
                    ORDER BY latest_at DESC"""
             ).fetchall()
         by_status = {row["status"]: row["count"] for row in totals}
