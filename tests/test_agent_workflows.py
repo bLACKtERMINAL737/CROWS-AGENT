@@ -1104,3 +1104,78 @@ def test_workflow_listing_api_search_combines_with_filters(tmp_path, monkeypatch
     with pytest.raises(HTTPException) as error:
         app_module.list_agent_workflows(query="x" * 201)
     assert error.value.status_code == 400
+
+
+def test_workflow_listing_filters_creation_time_range(tmp_path, monkeypatch):
+    store, _router = configure(monkeypatch, tmp_path)
+    first = store.create_workflow("First", [])
+    with store.connect() as con:
+        first_created = con.execute(
+            "SELECT created_at FROM agent_workflows WHERE id=?", (first["id"],)
+        ).fetchone()["created_at"]
+    second = store.create_workflow("Second", [])
+    with store.connect() as con:
+        second_created = con.execute(
+            "SELECT created_at FROM agent_workflows WHERE id=?", (second["id"],)
+        ).fetchone()["created_at"]
+    assert [item["id"] for item in store.list_workflows(
+        created_after=first_created, created_before=first_created
+    )] == [first["id"]]
+    assert [item["id"] for item in store.list_workflows(
+        created_after=first_created, created_before=second_created
+    )] == [first["id"], second["id"]]
+    with pytest.raises(ValueError, match="must include a timezone"):
+        store.list_workflows(created_after="2026-01-01T00:00:00")
+    with pytest.raises(ValueError, match="must not be later"):
+        store.list_workflows(created_after=second_created, created_before=first_created)
+
+
+def test_workflow_listing_api_passes_creation_time_range(tmp_path, monkeypatch):
+    store, _router = configure(monkeypatch, tmp_path)
+    matching = store.create_workflow("Time filtered", [])
+    monkeypatch.setattr(app_module, "store", store)
+    with store.connect() as con:
+        created = con.execute(
+            "SELECT created_at FROM agent_workflows WHERE id=?", (matching["id"],)
+        ).fetchone()["created_at"]
+    response = app_module.list_agent_workflows(created_after=created, created_before=created)
+    assert [item["id"] for item in response["workflows"]] == [matching["id"]]
+    with pytest.raises(HTTPException) as error:
+        app_module.list_agent_workflows(created_after="not-a-date")
+    assert error.value.status_code == 400
+
+
+def test_workflow_health_reports_stale_but_never_mutates_workflows(tmp_path, monkeypatch):
+    store, _router = configure(monkeypatch, tmp_path)
+    stale = store.create_workflow("Stale running", [])
+    paused = store.create_workflow("Paused intentionally", [])
+    store.set_workflow_control(paused["id"], "paused")
+    unknown = store.create_workflow("Uncertain outcome", [])
+    store.update_workflow(unknown["id"], "unknown", results={"tasks": []})
+    old = "2020-01-01T00:00:00+00:00"
+    with store.connect() as con:
+        con.execute(
+            "UPDATE agent_workflows SET updated_at=? WHERE id IN (?,?)",
+            (old, stale["id"], unknown["id"]),
+        )
+        con.execute(
+            "UPDATE workflow_controls SET updated_at=? WHERE workflow_id IN (?,?)",
+            (old, stale["id"], unknown["id"]),
+        )
+    before = {item["id"]: item["status"] for item in store.list_workflows()}
+    report = store.workflow_health(stale_after_seconds=60)
+    assert report["stale_count"] == 2
+    assert {item["id"] for item in report["stale_workflows"]} == {stale["id"], unknown["id"]}
+    assert paused["id"] not in {item["id"] for item in report["stale_workflows"]}
+    assert all(item["age_seconds"] >= 60 for item in report["stale_workflows"])
+    after = {item["id"]: item["status"] for item in store.list_workflows()}
+    assert after == before
+
+
+def test_workflow_health_api_validates_limits(tmp_path, monkeypatch):
+    store, _router = configure(monkeypatch, tmp_path)
+    monkeypatch.setattr(app_module, "store", store)
+    assert app_module.get_agent_workflow_health(stale_after_seconds=60)["stale_count"] == 0
+    with pytest.raises(HTTPException) as error:
+        app_module.get_agent_workflow_health(stale_after_seconds=0)
+    assert error.value.status_code == 400
