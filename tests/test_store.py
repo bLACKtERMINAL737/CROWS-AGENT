@@ -1098,3 +1098,64 @@ def test_equal_priority_and_timestamp_preserve_insertion_order(tmp_path: Path):
 
     assert store.claim_next_task("worker-one")["id"] == first["id"]
     assert store.claim_next_task("worker-two")["id"] == second["id"]
+
+
+def test_priority_aging_prevents_old_low_priority_task_starvation(tmp_path: Path):
+    store = TaskStore(tmp_path / "priority-aging.sqlite3")
+    old_low = store.create_task("old low", "waiting for a long time", priority=-10)
+    fresh_high = store.create_task("fresh high", "new high priority work", priority=0)
+
+    with store.connect() as con:
+        con.execute(
+            "UPDATE tasks SET created_at=? WHERE id=?",
+            ("2026-11-13T00:00:00+00:00", old_low["id"]),
+        )
+        con.execute(
+            "UPDATE tasks SET created_at=? WHERE id=?",
+            ("2026-11-14T00:00:00+00:00", fresh_high["id"]),
+        )
+
+    claimed = store.claim_next_task("aging-worker", priority_aging_minutes=30)
+    assert claimed["id"] == old_low["id"]
+
+
+def test_priority_aging_preserves_fifo_for_equal_effective_priority(tmp_path: Path):
+    store = TaskStore(tmp_path / "priority-aging-fifo.sqlite3")
+    first = store.create_task("first", "first in queue", priority=2)
+    second = store.create_task("second", "second in queue", priority=2)
+    with store.connect() as con:
+        con.execute(
+            "UPDATE tasks SET created_at=? WHERE id=?",
+            ("2026-11-13T00:00:00+00:00", first["id"]),
+        )
+        con.execute(
+            "UPDATE tasks SET created_at=? WHERE id=?",
+            ("2026-11-13T00:00:00+00:00", second["id"]),
+        )
+
+    assert store.claim_next_task("fifo-aging-worker")["id"] == first["id"]
+    assert store.claim_next_task("fifo-aging-worker-2")["id"] == second["id"]
+
+
+def test_priority_aging_interval_is_validated(tmp_path: Path):
+    import pytest
+
+    store = TaskStore(tmp_path / "priority-aging-validation.sqlite3")
+    store.create_task("queued", "validate scheduler input")
+    for invalid in (0, -1, 10081, True, 1.5):
+        with pytest.raises(ValueError, match="priority_aging_minutes"):
+            store.claim_next_task("aging-validation-worker", priority_aging_minutes=invalid)
+
+
+def test_queue_metrics_include_oldest_age_and_effective_priority(tmp_path: Path):
+    store = TaskStore(tmp_path / "priority-aging-metrics.sqlite3")
+    task = store.create_task("old queued", "metrics", priority=-2)
+    with store.connect() as con:
+        con.execute(
+            "UPDATE tasks SET created_at=? WHERE id=?",
+            ("2026-11-13T00:00:00+00:00", task["id"]),
+        )
+
+    metrics = store.task_queue_metrics()
+    assert metrics["oldest_queued_age_seconds"] > 0
+    assert metrics["top_effective_priority_30m_aging"] >= -2
