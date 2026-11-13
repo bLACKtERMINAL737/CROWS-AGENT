@@ -1685,8 +1685,10 @@ def get_agent_workflow(workflow_id: str):
 
 
 @app.get("/agents/workflows/{workflow_id}/timeline")
-def get_agent_workflow_timeline(workflow_id: str):
-    """Return an ordered, content-minimizing view of persisted workflow activity."""
+def get_agent_workflow_timeline(workflow_id: str, limit: int = 100, offset: int = 0):
+    """Return a bounded page of ordered, content-minimizing workflow activity."""
+    if not 1 <= limit <= 500 or not 0 <= offset <= 1_000_000:
+        raise HTTPException(status_code=400, detail="limit or offset is outside its allowed range")
     workflow = store.get_workflow(workflow_id)
     if workflow is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
@@ -1712,10 +1714,19 @@ def get_agent_workflow_timeline(workflow_id: str):
             **task,
             "tool_executions": store.list_tool_executions(task_id),
         })
+    events = build_workflow_timeline(workflow, task_records)
+    total_events = len(events)
     return {
         "status": workflow.get("status"),
         "control_state": workflow.get("control_state"),
-        "timeline": build_workflow_timeline(workflow, task_records),
+        "timeline": events[offset:offset + limit],
+        "pagination": {
+            "limit": limit,
+            "offset": offset,
+            "total": total_events,
+            "returned": len(events[offset:offset + limit]),
+            "has_more": offset + limit < total_events,
+        },
     }
 
 

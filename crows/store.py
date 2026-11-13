@@ -791,7 +791,7 @@ class TaskStore:
                 (cutoff,),
             ).fetchone()["count"]
             stale_rows = con.execute(
-                "SELECT w.id,w.goal,w.status,w.created_at,w.updated_at,"
+                "SELECT w.id,w.goal,w.status,w.results_json,w.created_at,w.updated_at,"
                 "COALESCE(wc.state,CASE WHEN w.status='running' "
                 "THEN 'running' ELSE 'completed' END) AS control_state "
                 "FROM agent_workflows AS w LEFT JOIN workflow_controls AS wc "
@@ -809,6 +809,29 @@ class TaskStore:
                 item["age_seconds"] = max(0, int((now - updated).total_seconds()))
             except (TypeError, ValueError):
                 item["age_seconds"] = None
+            raw_results = item.pop("results_json", "{}")
+            try:
+                results = json.loads(raw_results) if isinstance(raw_results, str) else {}
+            except (TypeError, ValueError):
+                results = {}
+            outcomes = results.get("tasks") if isinstance(results, dict) else []
+            outcomes = outcomes if isinstance(outcomes, list) else []
+            task_status_counts: dict[str, int] = {}
+            for outcome in outcomes:
+                if not isinstance(outcome, dict):
+                    continue
+                task_status = outcome.get("status")
+                if isinstance(task_status, str):
+                    task_status_counts[task_status] = task_status_counts.get(task_status, 0) + 1
+            item["task_status_counts"] = task_status_counts
+            item["failed_task_count"] = task_status_counts.get("failed", 0)
+            item["unknown_task_count"] = task_status_counts.get("unknown", 0)
+            if item["control_state"] == "cancel_requested":
+                item["stale_reason"] = "cancellation_pending"
+            elif item["status"] == "unknown":
+                item["stale_reason"] = "workflow_outcome_uncertain"
+            else:
+                item["stale_reason"] = "running_without_recent_checkpoint"
             stale.append(item)
         return {
             "generated_at": now.isoformat(),
