@@ -87,3 +87,31 @@ async def test_durable_agent_worker_marks_expired_lease_unknown_without_replay(
 
     assert store.get_task(task["id"])["status"] == "unknown"
     assert executed is False
+
+
+@pytest.mark.asyncio
+async def test_worker_cancellation_marks_live_leased_task_unknown(monkeypatch, tmp_path):
+    store = TaskStore(tmp_path / "agent-worker-cancel.sqlite3")
+    task = store.create_task("[research] Cancelled queue item", "Do not replay")
+    claimed = store.claim_next_task("worker-cancel", lease_seconds=60)
+    assert claimed["id"] == task["id"]
+    monkeypatch.setattr(app_module, "store", store)
+    started = asyncio.Event()
+
+    async def blocking_runner(task_id, *, worker_id):
+        assert store.owns_task_lease(task_id, worker_id)
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(app_module, "_run_agent_task_unlimited", blocking_runner)
+    execution = asyncio.create_task(
+        app_module.run_agent_task_with_worker_lease(task["id"], "worker-cancel")
+    )
+    await asyncio.wait_for(started.wait(), timeout=1)
+    execution.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await execution
+
+    saved = store.get_task(task["id"])
+    assert saved["status"] == "unknown"
+    assert saved["lease_owner"] is None
