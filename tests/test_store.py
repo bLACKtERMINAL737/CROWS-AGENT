@@ -1084,3 +1084,17 @@ def test_queue_metrics_include_priority_backlog_and_oldest_queued_time(tmp_path:
 
     assert metrics["queued_by_priority"] == {"5": 1, "-2": 1}
     assert metrics["oldest_queued_at"] == low["created_at"]
+
+
+def test_equal_priority_and_timestamp_preserve_insertion_order(tmp_path: Path):
+    store = TaskStore(tmp_path / "priority-fifo-ties.sqlite3")
+    first = store.create_task("first", "inserted first", priority=3)
+    second = store.create_task("second", "inserted second", priority=3)
+    with store.connect() as con:
+        con.execute(
+            "UPDATE tasks SET created_at=? WHERE id IN (?,?)",
+            ("2026-01-01T00:00:00+00:00", first["id"], second["id"]),
+        )
+
+    assert store.claim_next_task("worker-one")["id"] == first["id"]
+    assert store.claim_next_task("worker-two")["id"] == second["id"]
