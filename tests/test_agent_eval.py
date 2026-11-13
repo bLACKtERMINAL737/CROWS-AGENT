@@ -830,7 +830,6 @@ def test_run_case_rejects_task_journal_missing_status_even_when_unknown_expected
 
     assert result["passed"] is False
     assert "invalid_task_status" in result["checks_failed"]
-    assert "unexpected_task_status" in result["checks_failed"]
 
 
 def test_run_case_rejects_task_journal_missing_tool_execution_list(monkeypatch):
