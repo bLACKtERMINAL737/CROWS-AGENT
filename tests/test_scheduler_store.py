@@ -473,4 +473,5 @@ def test_pause_resume_only_transition_pending_schedules_and_are_idempotent(tmp_p
     store.claim_due("worker-a", now="2026-01-02T00:00:00+00:00")
     assert store.pause_schedule(item["id"]) is None
     assert store.resume_schedule(item["id"]) is None
-    assert store.pause_schedule("missing") is None if False else True
+    with pytest.raises(KeyError, match="Schedule not found"):
+        store.pause_schedule("missing")
