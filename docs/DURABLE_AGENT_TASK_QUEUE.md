@@ -18,7 +18,7 @@ Only tasks whose titles use a registered specialist prefix, such as `[research] 
 - Claims are atomic and ordered by effective priority, then oldest-first; a task can be leased by only one worker. Base priority ranges from -10 to 10. Priority aging adds one effective-priority point per 30 minutes queued, so long-waiting work eventually outranks newer work without changing its stored base priority. The aging interval is currently fixed at 30 minutes.
 - Each claim increments `attempt_count`. A worker must present its owner ID and a live lease to execute or finalize the task.
 - Task creation accepts an optional `priority` from -10 to 10 and an optional `idempotency_key`; repeating the same key and payload returns the original task, while reusing the key for a different title, input, or priority returns HTTP 409.
-- `POST /tasks/{task_id}/retry` explicitly requeues only known `failed` tasks, with a bounded `max_attempts` (default 3, maximum 10). `unknown` tasks cannot be retried automatically or through this endpoint.
+- `POST /tasks/{task_id}/retry` explicitly requeues only known `failed` tasks, with a bounded `max_retries` (default 3, maximum 10). `unknown` tasks cannot be retried automatically or through this endpoint.
 - Workers renew 120-second leases every 30 seconds while waiting for execution capacity or running a specialist.
 - A lease that expires is changed to `unknown`, not requeued. An interrupted task may already have performed work, so automatic replay could duplicate it. Inspect and explicitly reconcile uncertain work before creating a new task.
 - Completion is fenced by the current lease owner and expiry. A stale worker cannot overwrite a newer or uncertain outcome.

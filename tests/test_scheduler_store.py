@@ -300,10 +300,10 @@ def test_failed_schedule_retry_budget_is_bounded(tmp_path):
         if attempt < 3:
             saved = store.retry_failed_schedule(
                 item["id"], f"2026-01-0{attempt + 3}T00:00:00+00:00",
-                f"reviewed failure {attempt}", max_attempts=3,
+                f"reviewed failure {attempt}", max_retries=3,
             )
             assert saved["retry_count"] == attempt
     assert store.retry_failed_schedule(
-        item["id"], "2026-01-10T00:00:00+00:00", "exhausted", max_attempts=3
+        item["id"], "2026-01-10T00:00:00+00:00", "exhausted", max_retries=3
     ) is None
     assert len(store.list_retry_audit(item["id"])) == 2

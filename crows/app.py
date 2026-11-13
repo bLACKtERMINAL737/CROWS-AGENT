@@ -327,7 +327,7 @@ class TaskRequest(BaseModel):
 
 
 class TaskRetryRequest(BaseModel):
-    max_attempts: int = Field(default=3, ge=1, le=10)
+    max_retries: int = Field(default=3, ge=1, le=10)
 
 class ScheduleReconciliationRequest(BaseModel):
     note: str = Field(min_length=1, max_length=2000)
@@ -348,7 +348,7 @@ class ScheduleRescheduleRequest(BaseModel):
 class ScheduleRetryRequest(BaseModel):
     run_at: str = Field(min_length=1, max_length=80)
     reason: str = Field(min_length=1, max_length=2000)
-    max_attempts: int = Field(default=3, ge=1, le=10)
+    max_retries: int = Field(default=3, ge=1, le=10)
 
 
 
@@ -2940,7 +2940,7 @@ def create_task(request: TaskRequest):
 @app.post("/tasks/{task_id}/retry")
 def retry_failed_task(task_id: str, request: TaskRetryRequest):
     try:
-        retried = store.retry_failed_task(task_id, max_attempts=request.max_attempts)
+        retried = store.retry_failed_task(task_id, max_retries=request.max_retries)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc
     except ValueError as exc:
@@ -3007,7 +3007,7 @@ def retry_failed_schedule(schedule_id: str, request: ScheduleRetryRequest):
     try:
         saved = scheduler_store.retry_failed_schedule(
             schedule_id, request.run_at, request.reason,
-            max_attempts=request.max_attempts,
+            max_retries=request.max_retries,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Schedule not found") from exc

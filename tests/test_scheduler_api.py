@@ -242,7 +242,7 @@ def test_retry_api_enforces_bounded_attempt_budget(monkeypatch, tmp_path):
         json={
             "run_at": "2026-11-03T10:00:00+00:00",
             "reason": "reviewed",
-            "max_attempts": 11,
+            "max_retries": 11,
         },
         headers=auth(),
     )
