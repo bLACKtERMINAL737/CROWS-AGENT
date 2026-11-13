@@ -291,10 +291,17 @@ class TaskStore:
             ):
                 if column not in task_columns:
                     con.execute(f"ALTER TABLE tasks ADD COLUMN {column} {declaration}")
-            # Replace the pre-priority queue index created by older releases.
-            con.execute("DROP INDEX IF EXISTS idx_tasks_dispatch_queue")
+            # Replace the pre-priority queue index created by older releases,
+            # but avoid rebuilding an already-current index on every startup.
+            dispatch_index = [
+                row["name"] for row in con.execute(
+                    "PRAGMA index_info(idx_tasks_dispatch_queue)"
+                ).fetchall()
+            ]
+            if dispatch_index != ["status", "priority", "created_at", "id"]:
+                con.execute("DROP INDEX IF EXISTS idx_tasks_dispatch_queue")
             con.execute(
-                "CREATE INDEX idx_tasks_dispatch_queue "
+                "CREATE INDEX IF NOT EXISTS idx_tasks_dispatch_queue "
                 "ON tasks(status, priority DESC, created_at, id)"
             )
             con.execute(
