@@ -766,3 +766,45 @@ def test_run_case_rejects_invalid_tool_execution_status(monkeypatch, execution_s
     assert result["passed"] is False
     assert "invalid_tool_execution_status" in result["checks_failed"]
     assert result["tools_observed"] == []
+
+
+@pytest.mark.parametrize("base_url", [
+    "",
+    "ftp://localhost:8000",
+    "http://example.com",
+    "http://192.0.2.10:8000",
+    "https://user:password@example.com",
+    "https://example.com/path?token=secret",
+    "https://example.com/path#fragment",
+    "https://example.com:99999",
+])
+def test_validate_base_url_rejects_unsafe_or_malformed_urls(base_url):
+    with pytest.raises(ValueError):
+        agent_eval.validate_base_url(base_url)
+
+
+@pytest.mark.parametrize("base_url", [
+    "http://localhost:8000",
+    "http://127.0.0.1:8000/",
+    "http://[::1]:8000",
+    "https://crows.example/api/",
+])
+def test_validate_base_url_accepts_loopback_http_and_remote_https(base_url):
+    assert agent_eval.validate_base_url(base_url) == base_url.rstrip("/")
+
+
+def test_main_rejects_remote_http_before_sending_authorization(tmp_path, monkeypatch, capsys):
+    cases_path = tmp_path / "cases.json"
+    cases_path.write_text(json.dumps([{"name": "basic", "message": "Say READY"}]), encoding="utf-8")
+    monkeypatch.setattr("sys.argv", [
+        "agent_eval.py", "--cases", str(cases_path),
+        "--base-url", "http://example.com", "--output", str(tmp_path / "report.json"),
+    ])
+    def unexpected_request(*_args, **_kwargs):
+        pytest.fail("API request must not be made for an insecure remote URL")
+    monkeypatch.setattr(agent_eval, "_request_json", unexpected_request)
+    exit_code = agent_eval.main()
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "Non-loopback API URLs must use HTTPS" in captured.err
+    assert not (tmp_path / "report.json").exists()

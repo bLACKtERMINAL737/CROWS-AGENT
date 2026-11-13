@@ -17,10 +17,11 @@ import re
 import sys
 import time
 from pathlib import Path
+import ipaddress
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 
 def load_cases(path: Path) -> list[dict[str, Any]]:
@@ -131,6 +132,31 @@ def _request_json(
         raise RuntimeError("API returned an unexpected JSON shape")
     return decoded
 
+
+def validate_base_url(value: str) -> str:
+    """Validate the API origin before attaching an authorization token."""
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        parsed.port  # Also validates malformed and out-of-range ports.
+    except ValueError:
+        raise ValueError("Invalid API base URL") from None
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("Invalid API base URL")
+    try:
+        is_loopback = ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        is_loopback = hostname.lower() == "localhost"
+    if parsed.scheme == "http" and not is_loopback:
+        raise ValueError("Non-loopback API URLs must use HTTPS")
+    return value.rstrip("/")
 
 def response_metadata(response: dict[str, Any], case: dict[str, Any]) -> dict[str, Any]:
     """Keep only bounded, non-secret routing metadata from a chat response."""
@@ -336,12 +362,13 @@ def main() -> int:
         parser.error("--timeout must be between 0.1 and 600 seconds")
     token = os.getenv("CROWS_API_TOKEN", "") or os.getenv("AETHER_API_TOKEN", "")
     try:
+        base_url = validate_base_url(args.base_url)
         cases = load_cases(args.cases)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
     results = [
-        run_case(case, base_url=args.base_url, token=token, timeout=args.timeout)
+        run_case(case, base_url=base_url, token=token, timeout=args.timeout)
         for case in cases
     ]
     passed = sum(bool(item["passed"]) for item in results)
