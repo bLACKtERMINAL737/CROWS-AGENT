@@ -1165,7 +1165,11 @@ def test_workflow_health_reports_stale_but_never_mutates_workflows(tmp_path, mon
     before = {item["id"]: item["status"] for item in store.list_workflows()}
     report = store.workflow_health(stale_after_seconds=60)
     assert report["stale_count"] == 2
+    assert report["returned_count"] == 2
     assert {item["id"] for item in report["stale_workflows"]} == {stale["id"], unknown["id"]}
+    bounded = store.workflow_health(stale_after_seconds=60, limit=1)
+    assert bounded["stale_count"] == 2
+    assert bounded["returned_count"] == 1
     assert paused["id"] not in {item["id"] for item in report["stale_workflows"]}
     assert all(item["age_seconds"] >= 60 for item in report["stale_workflows"])
     after = {item["id"]: item["status"] for item in store.list_workflows()}
