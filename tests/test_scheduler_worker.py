@@ -30,7 +30,9 @@ async def test_scheduler_worker_dispatches_due_registered_specialist_once(monkey
             await asyncio.Event().wait()
         raise asyncio.CancelledError()
 
-    monkeypatch.setattr(app_module, "run_agent_task", fake_run)
+    monkeypatch.setattr(
+        app_module, "run_agent_task_with_lease_renewal", fake_run_with_lease_renewal
+    )
     monkeypatch.setattr(app_module.asyncio, "sleep", stop_after_one_iteration)
 
     with pytest.raises(asyncio.CancelledError):
@@ -57,10 +59,9 @@ async def test_scheduler_worker_does_not_preclaim_work_it_cannot_start(monkeypat
     monkeypatch.setattr(app_module, "store", tasks)
     monkeypatch.setattr(app_module, "list_agent_roles", lambda: [{"id": "research"}])
 
-    async def fake_run(task_id):
+    async def fake_run_with_lease_renewal(task_id, schedule_id, worker_id):
         assert tasks.claim_task(task_id)
         tasks.set_task_status(task_id, "succeeded", result={"ok": True})
-        return {"status": "succeeded"}
 
     async def stop_after_one_iteration(_delay):
         raise asyncio.CancelledError()
