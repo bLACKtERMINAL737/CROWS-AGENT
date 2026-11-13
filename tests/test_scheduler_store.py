@@ -350,3 +350,44 @@ def test_attach_task_to_claim_rejects_expired_lease(tmp_path):
         now="2026-01-02T00:00:06+00:00",
     ) is False
     assert store.get_schedule(schedule["id"])["task_id"] is None
+
+
+def test_finish_claim_preserves_previously_attached_task_id(tmp_path: Path):
+    store = SchedulerStore(tmp_path / "scheduler-finish-link.sqlite3")
+    item = store.create_schedule(
+        "Linked task", "Run linked task", "2026-01-01T00:00:00+00:00", "finish-link"
+    )
+    now = "2026-01-02T00:00:00+00:00"
+    assert len(store.claim_due("worker-a", now=now, lease_seconds=60)) == 1
+    assert store.attach_task_to_claim(
+        item["id"], "worker-a", "durable-task-123",
+        now="2026-01-02T00:00:10+00:00",
+    )
+    # Worker completion often omits task_id because it was attached before
+    # execution. Finalization must not erase that durable crash-diagnosis link.
+    assert store.finish_claim(
+        item["id"], "worker-a", "completed",
+        result_json='{"ok":true}',
+        now="2026-01-02T00:00:20+00:00",
+    )
+    saved = store.get_schedule(item["id"])
+    assert saved["status"] == "completed"
+    assert saved["task_id"] == "durable-task-123"
+
+
+def test_finish_claim_can_replace_attached_task_id_only_when_explicit(tmp_path: Path):
+    store = SchedulerStore(tmp_path / "scheduler-finish-replace.sqlite3")
+    item = store.create_schedule(
+        "Linked task", "Run linked task", "2026-01-01T00:00:00+00:00", "finish-replace"
+    )
+    now = "2026-01-02T00:00:00+00:00"
+    store.claim_due("worker-a", now=now, lease_seconds=60)
+    assert store.attach_task_to_claim(
+        item["id"], "worker-a", "durable-task-original",
+        now="2026-01-02T00:00:10+00:00",
+    )
+    assert store.finish_claim(
+        item["id"], "worker-a", "failed", task_id="durable-task-final",
+        now="2026-01-02T00:00:20+00:00",
+    )
+    assert store.get_schedule(item["id"])["task_id"] == "durable-task-final"
