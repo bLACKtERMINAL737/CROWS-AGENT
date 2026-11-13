@@ -287,23 +287,27 @@ def test_failed_schedule_retry_budget_is_bounded(tmp_path):
     item = store.create_schedule(
         "Budget", "Run budget test", "2026-01-01T00:00:00+00:00", "retry-budget"
     )
-    for attempt in range(1, 4):
+    # Three retries are permitted after three reviewed failures. A fourth
+    # definitive failure must remain failed once the retry budget is spent.
+    for attempt in range(1, 5):
+        day = attempt + 2
         claimed = store.claim_due(
-            f"worker-{attempt}", now=f"2026-01-0{attempt + 2}T00:00:00+00:00", lease_seconds=300
+            f"worker-{attempt}", now=f"2026-01-{day:02d}T00:00:00+00:00",
+            lease_seconds=300,
         )
         assert claimed
         assert store.finish_claim(
             item["id"], f"worker-{attempt}", "failed",
             task_id=f"failed-task-{attempt}",
-            now=f"2026-01-0{attempt + 2}T00:01:00+00:00",
+            now=f"2026-01-{day:02d}T00:01:00+00:00",
         )
-        if attempt < 3:
+        if attempt <= 3:
             saved = store.retry_failed_schedule(
-                item["id"], f"2026-01-0{attempt + 3}T00:00:00+00:00",
+                item["id"], f"2026-01-{day + 1:02d}T00:00:00+00:00",
                 f"reviewed failure {attempt}", max_retries=3,
             )
             assert saved["retry_count"] == attempt
     assert store.retry_failed_schedule(
         item["id"], "2026-01-10T00:00:00+00:00", "exhausted", max_retries=3
     ) is None
-    assert len(store.list_retry_audit(item["id"])) == 2
+    assert len(store.list_retry_audit(item["id"])) == 3
