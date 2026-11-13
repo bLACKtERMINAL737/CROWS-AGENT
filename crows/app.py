@@ -2578,10 +2578,11 @@ async def _run_agent_task_unlimited(task_id: str, *, worker_id: str | None = Non
     task = store.get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    if task["status"] != "queued":
+    expected_status = "running" if worker_id is not None else "queued"
+    if task["status"] != expected_status:
         raise HTTPException(
             status_code=409,
-            detail=f"Task cannot run from status '{task['status']}'. Only queued tasks can run.",
+            detail=f"Task cannot run from status '{task['status']}'. Expected '{expected_status}'.",
         )
 
     match = re.match(r"^\[([a-z_]+)\]\s+(.+)$", str(task.get("title", "")))
