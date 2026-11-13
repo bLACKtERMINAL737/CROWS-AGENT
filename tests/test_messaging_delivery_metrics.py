@@ -41,3 +41,15 @@ def test_delivery_metrics_returns_zero_counts_for_empty_store(tmp_path: Path):
     assert all(value == 0 for value in metrics["by_status"].values())
     assert metrics["by_channel"] == {}
     assert metrics["recent_failures"] == []
+
+
+def test_delivery_metrics_recent_failures_include_failure_code(tmp_path: Path):
+    store = MessagingStore(tmp_path / "failure-metrics.sqlite3")
+    queued = store.queue_outbound(channel="discord", provider_user_id="u", text="private", idempotency_key="k")
+    message_id = queued["message"]["id"]
+    store.claim_outbound(worker_id="worker-1", message_id=message_id)
+    store.finish_outbound_lease(message_id, worker_id="worker-1", status="failed", failure_code="provider_http_503")
+    metrics = store.delivery_metrics()
+    assert metrics["recent_failures"]
+    assert "failure_code" in metrics["recent_failures"][0] or metrics["recent_failures"][0].get("failure_code") == "provider_http_503"
+    assert "private" not in str(metrics)

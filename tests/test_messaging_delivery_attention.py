@@ -73,3 +73,31 @@ def test_attention_endpoint_is_bounded_and_returns_sanitized_records(
     assert "private-recipient" not in str(result)
     with pytest.raises(Exception):
         app_module.messaging_outbox_attention(limit=101)
+
+
+def test_attention_includes_safe_failure_code_without_private_payload(tmp_path: Path):
+    store = MessagingStore(tmp_path / "failure-code.sqlite3")
+    queued = store.queue_outbound(
+        channel="telegram", provider_user_id="secret-recipient",
+        text="secret message body", idempotency_key="secret-key",
+    )
+    message_id = queued["message"]["id"]
+    assert store.claim_outbound(worker_id="worker-1", message_id=message_id)
+    assert store.finish_outbound_lease(
+        message_id, worker_id="worker-1", status="failed", failure_code="provider_http_403"
+    )
+    record = store.list_outbound_attention()[0]
+    assert record["failure_code"] == "provider_http_403"
+    assert "secret-recipient" not in str(record)
+    assert "secret message body" not in str(record)
+    assert "secret-key" not in str(record)
+
+
+def test_finish_outbound_lease_rejects_unsafe_failure_code(tmp_path: Path):
+    from crows.messaging import MessagingContractError
+    store = MessagingStore(tmp_path / "invalid-failure-code.sqlite3")
+    queued = store.queue_outbound(channel="telegram", provider_user_id="u", text="hi", idempotency_key="k")
+    message_id = queued["message"]["id"]
+    store.claim_outbound(worker_id="worker-1", message_id=message_id)
+    with pytest.raises(MessagingContractError, match="safe lowercase"):
+        store.finish_outbound_lease(message_id, worker_id="worker-1", status="failed", failure_code="Bearer SECRET")

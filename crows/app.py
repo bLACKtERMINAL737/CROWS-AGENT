@@ -898,7 +898,7 @@ async def deliver_outbound_batch(
         target = messaging_store.get_delivery_target(message_id)
         if not target:
             messaging_store.finish_outbound_lease(
-                message_id, worker_id=worker_id, status="failed"
+                message_id, worker_id=worker_id, status="failed", failure_code="missing_delivery_target"
             )
             outcomes["failed"] += 1
             continue
@@ -907,7 +907,7 @@ async def deliver_outbound_batch(
                 adapter = outbound_adapter_registry.get(channel)
             except MessagingContractError:
                 messaging_store.finish_outbound_lease(
-                    message_id, worker_id=worker_id, status="failed"
+                    message_id, worker_id=worker_id, status="failed", failure_code="adapter_not_configured"
                 )
                 outcomes["failed"] += 1
                 continue
@@ -936,14 +936,16 @@ async def deliver_outbound_batch(
             finished = messaging_store.finish_outbound_lease(
                 message_id, worker_id=worker_id, status=status,
                 provider_message_id=receipt.provider_message_id,
+                failure_code=(f"provider_http_{receipt.status_code}" if not receipt.success else None),
             )
             if not finished:
                 outcomes["skipped"] += 1
             else:
                 outcomes[status] += 1
-        except (httpx.HTTPError, ValueError):
+        except (httpx.HTTPError, ValueError) as exc:
             finished = messaging_store.finish_outbound_lease(
-                message_id, worker_id=worker_id, status="unknown"
+                message_id, worker_id=worker_id, status="unknown",
+                failure_code="transport_" + type(exc).__name__.lower(),
             )
             if finished:
                 outcomes["unknown"] += 1
