@@ -676,14 +676,44 @@ class TaskStore:
         result["control_state"] = self.get_workflow_control(workflow_id)
         return result
 
-    def list_workflows(self, limit: int = 50, *, offset: int = 0) -> list[dict[str, Any]]:
+    def list_workflows(
+        self,
+        limit: int = 50,
+        *,
+        offset: int = 0,
+        status: str | None = None,
+        control_state: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """List workflows with bounded pagination and optional operational filters."""
+        valid_statuses = {"running", "succeeded", "partial", "failed", "unknown"}
+        valid_control_states = {"running", "paused", "cancel_requested", "completed"}
         if not 1 <= limit <= 200 or not 0 <= offset <= 1_000_000:
             raise ValueError("limit or offset is outside its allowed range")
+        if status is not None and status not in valid_statuses:
+            raise ValueError("invalid workflow status filter")
+        if control_state is not None and control_state not in valid_control_states:
+            raise ValueError("invalid workflow control-state filter")
+
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status is not None:
+            clauses.append("w.status=?")
+            params.append(status)
+        if control_state is not None:
+            clauses.append(
+                "COALESCE(wc.state, CASE WHEN w.status='running' "
+                "THEN 'running' ELSE 'completed' END)=?"
+            )
+            params.append(control_state)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        params.extend((limit, offset))
         with self.connect() as con:
             rows = con.execute(
-                "SELECT id FROM agent_workflows "
-                "ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
-                (limit, offset),
+                "SELECT w.id FROM agent_workflows AS w "
+                "LEFT JOIN workflow_controls AS wc ON wc.workflow_id=w.id"
+                + where
+                + " ORDER BY w.created_at DESC, w.id DESC LIMIT ? OFFSET ?",
+                params,
             ).fetchall()
         return [
             workflow for row in rows
