@@ -916,7 +916,10 @@ async def scheduler_worker_loop() -> None:
             expired = scheduler_store.mark_expired_claims_unknown()
             if expired:
                 logger.warning("Marked %s expired scheduler leases as unknown", expired)
-            claimed = scheduler_store.claim_due(worker_id, lease_seconds=300, limit=5)
+            # This worker dispatches schedules sequentially. Claim only one lease at a
+            # time so later due items do not spend most of their lease waiting
+            # behind an earlier, potentially long-running specialist.
+            claimed = scheduler_store.claim_due(worker_id, lease_seconds=300, limit=1)
             for item in claimed:
                 schedule_id = item["id"]
                 task_id = None
