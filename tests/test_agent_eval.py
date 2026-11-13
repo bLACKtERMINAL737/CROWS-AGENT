@@ -641,3 +641,32 @@ def test_main_reports_output_write_errors_without_traceback(tmp_path, monkeypatc
     assert "Could not write evaluation report (FileNotFoundError)" in captured.err
     assert "Traceback" not in captured.err
     assert "READY" not in captured.out
+
+
+@pytest.mark.parametrize("answer", [None, 123, True, [], {}, ["READY"]])
+def test_run_case_rejects_non_string_answers_without_serializing_them(monkeypatch, answer):
+    monkeypatch.setattr(
+        agent_eval,
+        "_request_json",
+        lambda *_args, **_kwargs: {
+            "answer": answer,
+            "task_id": None,
+            "tool_calls": 0,
+        },
+    )
+
+    result = agent_eval.run_case(
+        {
+            "name": "invalid answer shape",
+            "message": "Say READY",
+            "expected_contains": ["READY"],
+        },
+        base_url="http://127.0.0.1:8000",
+        token="test-token",
+        timeout=1,
+    )
+
+    assert result["passed"] is False
+    assert "invalid_answer_type" in result["checks_failed"]
+    assert "answer" not in result
+    assert "READY" not in json.dumps(result)

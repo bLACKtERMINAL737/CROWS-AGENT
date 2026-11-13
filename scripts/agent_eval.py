@@ -180,9 +180,14 @@ def run_case(
             base_url.rstrip("/") + "/chat", token=token, payload=payload, timeout=timeout
         )
         routing_metadata = response_metadata(response, case)
-        answer = str(response.get("answer", ""))
-        if not answer:
-            checks.append("empty_answer")
+        raw_answer = response.get("answer", "")
+        if not isinstance(raw_answer, str):
+            checks.append("invalid_answer_type")
+            answer = ""
+        else:
+            answer = raw_answer
+            if not answer:
+                checks.append("empty_answer")
         normalized_answer = answer.casefold()
         expected = [item.casefold() for item in case.get("expected_contains", [])]
         if any(item not in normalized_answer for item in expected):
