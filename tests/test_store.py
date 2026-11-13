@@ -1013,3 +1013,71 @@ def test_startup_recovery_clears_interrupted_worker_lease(tmp_path: Path):
     assert saved["lease_owner"] is None
     assert saved["lease_expires_at"] is None
     assert not store.finish_task_lease(task["id"], "previous-process", "succeeded")
+
+
+def test_task_queue_claims_higher_priority_before_older_low_priority(tmp_path: Path):
+    store = TaskStore(tmp_path / "priority-queue.sqlite3")
+    low = store.create_task("low", "low priority", priority=-5)
+    normal = store.create_task("normal", "normal priority", priority=0)
+    high = store.create_task("high", "high priority", priority=8)
+
+    assert store.claim_next_task("worker-one")["id"] == high["id"]
+    assert store.claim_next_task("worker-two")["id"] == normal["id"]
+    assert store.claim_next_task("worker-three")["id"] == low["id"]
+
+
+def test_task_creation_idempotency_returns_same_task_and_rejects_changed_payload(tmp_path: Path):
+    import pytest
+    from crows.store import IdempotencyConflictError
+
+    store = TaskStore(tmp_path / "task-idempotency.sqlite3")
+    first = store.create_task(
+        "same request", "same input", priority=4, idempotency_key="request-123"
+    )
+    repeated = store.create_task(
+        "same request", "same input", priority=4, idempotency_key="request-123"
+    )
+
+    assert repeated["id"] == first["id"]
+    assert store.task_queue_metrics()["queued"] == 1
+    with pytest.raises(IdempotencyConflictError):
+        store.create_task(
+            "same request", "different input", priority=4, idempotency_key="request-123"
+        )
+
+
+def test_task_retry_only_requeues_failed_work_with_bounded_attempts(tmp_path: Path):
+    store = TaskStore(tmp_path / "task-retry.sqlite3")
+    task = store.create_task("retry me", "known failed execution")
+    assert store.claim_task(task["id"])
+    store.set_task_status(task["id"], "failed", error="provider unavailable")
+
+    retried = store.retry_failed_task(task["id"], max_attempts=2)
+    assert retried is not None
+    assert retried["status"] == "queued"
+    assert retried["attempt_count"] == 1
+    assert store.claim_task(task["id"])
+    store.set_task_status(task["id"], "failed", error="provider unavailable again")
+
+    assert store.retry_failed_task(task["id"], max_attempts=2) is None
+    assert store.get_task(task["id"])["status"] == "failed"
+
+
+def test_uncertain_task_is_never_eligible_for_retry(tmp_path: Path):
+    store = TaskStore(tmp_path / "task-unknown-retry.sqlite3")
+    task = store.create_task("uncertain", "possibly executed")
+    assert store.claim_task(task["id"])
+    store.set_task_status(task["id"], "unknown", error="worker lost")
+
+    assert store.retry_failed_task(task["id"]) is None
+    assert store.get_task(task["id"])["status"] == "unknown"
+
+
+def test_queue_metrics_include_priority_backlog_and_oldest_queued_time(tmp_path: Path):
+    store = TaskStore(tmp_path / "task-priority-metrics.sqlite3")
+    low = store.create_task("low", "low", priority=-2)
+    store.create_task("high", "high", priority=5)
+    metrics = store.task_queue_metrics()
+
+    assert metrics["queued_by_priority"] == {"5": 1, "-2": 1}
+    assert metrics["oldest_queued_at"] == low["created_at"]
