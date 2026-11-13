@@ -187,7 +187,7 @@ class SchedulerStore:
             clauses.append("is_paused=?")
             params.append(int(paused))
         if overdue_before is not None:
-            clauses.extend(("status='scheduled'", "run_at<=?"))
+            clauses.extend(("status='scheduled'", "is_paused=0", "run_at<=?"))
             params.append(_utc(overdue_before))
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         params.append(limit)
