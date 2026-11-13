@@ -3066,19 +3066,27 @@ def retry_failed_schedule(schedule_id: str, request: ScheduleRetryRequest):
 
 
 @app.get("/scheduler/schedules/{schedule_id}/execution-history")
-def schedule_execution_history(schedule_id: str):
+def schedule_execution_history(schedule_id: str, limit: int = 50, offset: int = 0):
     try:
-        return {"entries": scheduler_store.list_execution_history(schedule_id)}
+        return {"entries": scheduler_store.list_execution_history(
+            schedule_id, limit=limit, offset=offset
+        )}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Schedule not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/scheduler/schedules/{schedule_id}/retry-audit")
-def schedule_retry_audit(schedule_id: str):
+def schedule_retry_audit(schedule_id: str, limit: int = 50, offset: int = 0):
     try:
-        return {"entries": scheduler_store.list_retry_audit(schedule_id)}
+        return {"entries": scheduler_store.list_retry_audit(
+            schedule_id, limit=limit, offset=offset
+        )}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Schedule not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/scheduler/schedules/{schedule_id}/reconcile")
@@ -3092,11 +3100,15 @@ def reconcile_schedule(schedule_id: str, request: ScheduleReconciliationRequest)
 
 
 @app.get("/scheduler/schedules/{schedule_id}/audit")
-def schedule_reconciliation_audit(schedule_id: str):
+def schedule_reconciliation_audit(schedule_id: str, limit: int = 50, offset: int = 0):
     try:
-        return {"entries": scheduler_store.list_reconciliation_audit(schedule_id)}
+        return {"entries": scheduler_store.list_reconciliation_audit(
+            schedule_id, limit=limit, offset=offset
+        )}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Schedule not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/scheduler/metrics")
