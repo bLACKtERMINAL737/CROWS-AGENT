@@ -1151,7 +1151,9 @@ def test_workflow_health_reports_stale_but_never_mutates_workflows(tmp_path, mon
     paused = store.create_workflow("Paused intentionally", [])
     store.set_workflow_control(paused["id"], "paused")
     unknown = store.create_workflow("Uncertain outcome", [])
-    store.update_workflow(unknown["id"], "unknown", results={"tasks": []})
+    store.update_workflow(unknown["id"], "unknown", results={"tasks": [
+        {"status": "failed"}, {"status": "unknown"}, {"status": "succeeded"}
+    ]})
     old = "2020-01-01T00:00:00+00:00"
     with store.connect() as con:
         con.execute(
@@ -1171,6 +1173,13 @@ def test_workflow_health_reports_stale_but_never_mutates_workflows(tmp_path, mon
     assert bounded["stale_count"] == 2
     assert bounded["returned_count"] == 1
     assert paused["id"] not in {item["id"] for item in report["stale_workflows"]}
+    unknown_report = next(item for item in report["stale_workflows"] if item["id"] == unknown["id"])
+    assert unknown_report["stale_reason"] == "workflow_outcome_uncertain"
+    assert unknown_report["task_status_counts"] == {"failed": 1, "unknown": 1, "succeeded": 1}
+    assert unknown_report["failed_task_count"] == 1
+    assert unknown_report["unknown_task_count"] == 1
+    stale_report = next(item for item in report["stale_workflows"] if item["id"] == stale["id"])
+    assert stale_report["stale_reason"] == "running_without_recent_checkpoint"
     assert all(item["age_seconds"] >= 60 for item in report["stale_workflows"])
     after = {item["id"]: item["status"] for item in store.list_workflows()}
     assert after == before
