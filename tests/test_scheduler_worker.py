@@ -21,6 +21,8 @@ async def test_scheduler_worker_dispatches_due_registered_specialist_once(monkey
     monkeypatch.setattr(app_module, "list_agent_roles", lambda: [{"id": "research"}])
 
     async def fake_run_with_lease_renewal(task_id, schedule_id, worker_id):
+        # The schedule/task link must already be durable before execution.
+        assert scheduler.get_schedule(schedule_id)["task_id"] == task_id
         assert tasks.claim_task(task_id)
         tasks.set_task_status(task_id, "succeeded", result={"summary": "Reviewed"})
 
