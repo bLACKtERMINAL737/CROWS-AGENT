@@ -834,6 +834,10 @@ async def run_agent_task_with_worker_lease(task_id: str, worker_id: str) -> None
             error=f"Agent worker execution failed ({type(exc).__name__}); inspect task journal.",
         )
         logger.warning("Durable agent task %s did not complete: %s", task_id, type(exc).__name__)
+    finally:
+        if not heartbeat.done():
+            heartbeat.cancel()
+        await asyncio.gather(heartbeat, return_exceptions=True)
 
 
 async def agent_task_worker_loop() -> None:
