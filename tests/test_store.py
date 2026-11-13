@@ -882,3 +882,134 @@ def test_legacy_workflow_without_control_row_remains_readable(tmp_path: Path):
     saved = store.get_workflow(workflow["id"])
     assert saved is not None
     assert saved["control_state"] == "running"
+
+
+def test_durable_task_queue_claims_oldest_task_once_and_tracks_attempts(tmp_path: Path):
+    import pytest
+
+    store = TaskStore(tmp_path / "durable-queue.sqlite3")
+    first = store.create_task("first", "oldest")
+    second = store.create_task("second", "newer")
+
+    claimed = store.claim_next_task("worker-a", lease_seconds=60)
+
+    assert claimed is not None
+    assert claimed["id"] == first["id"]
+    assert claimed["status"] == "running"
+    assert claimed["lease_owner"] == "worker-a"
+    assert claimed["attempt_count"] == 1
+
+    # A second worker should receive the next queued task, not the task
+    # already leased by worker-a. Queue claiming is not a global single-slot lock.
+    second_claim = store.claim_next_task("worker-b", lease_seconds=60)
+    assert second_claim is not None
+    assert second_claim["id"] == second["id"]
+    assert second_claim["lease_owner"] == "worker-b"
+    assert second_claim["attempt_count"] == 1
+    assert store.claim_next_task("worker-c", lease_seconds=60) is None
+
+
+def test_task_lease_renewal_and_completion_are_owner_fenced(tmp_path: Path):
+    store = TaskStore(tmp_path / "task-lease-fence.sqlite3")
+    task = store.create_task("leased", "complete exactly once")
+    assert store.claim_next_task("worker-a", lease_seconds=60)["id"] == task["id"]
+
+    assert store.owns_task_lease(task["id"], "worker-a")
+    assert not store.owns_task_lease(task["id"], "worker-b")
+    assert not store.renew_task_lease(task["id"], "worker-b", lease_seconds=60)
+    assert store.renew_task_lease(task["id"], "worker-a", lease_seconds=60)
+    assert not store.finish_task_lease(task["id"], "worker-b", "succeeded", result={"ok": True})
+    assert store.finish_task_lease(task["id"], "worker-a", "succeeded", result={"ok": True})
+    assert store.get_task(task["id"])["status"] == "succeeded"
+    assert not store.finish_task_lease(task["id"], "worker-a", "failed", error="stale")
+
+
+def test_expired_task_lease_becomes_unknown_and_is_never_requeued(tmp_path: Path):
+    store = TaskStore(tmp_path / "task-lease-expiry.sqlite3")
+    task = store.create_task("possibly executed", "do not replay automatically")
+    assert store.claim_next_task("worker-a", lease_seconds=60)["id"] == task["id"]
+    with store.connect() as con:
+        con.execute(
+            "UPDATE tasks SET lease_expires_at=? WHERE id=?",
+            ("2000-01-01T00:00:00+00:00", task["id"]),
+        )
+
+    assert store.mark_expired_task_leases_unknown() == 1
+    saved = store.get_task(task["id"])
+    assert saved["status"] == "unknown"
+    assert saved["lease_owner"] is None
+    assert store.claim_next_task("worker-b", lease_seconds=60) is None
+    assert not store.finish_task_lease(task["id"], "worker-a", "succeeded")
+
+
+def test_task_queue_metrics_are_aggregate_and_include_attempts(tmp_path: Path):
+    store = TaskStore(tmp_path / "task-queue-metrics.sqlite3")
+    store.create_task("one", "queued")
+    running = store.create_task("two", "running")
+    store.claim_next_task("worker-a")
+    metrics = store.task_queue_metrics()
+
+    assert metrics["queued"] == 1
+    assert metrics["running"] == 1
+    assert metrics["total_attempts"] == 1
+
+
+def test_existing_task_database_migrates_lease_columns_without_losing_tasks(tmp_path: Path):
+    import sqlite3
+
+    db_path = tmp_path / "legacy-task-schema.sqlite3"
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT NOT NULL, input_text TEXT NOT NULL, "
+            "status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, "
+            "result_json TEXT, error_text TEXT)"
+        )
+        con.execute(
+            "INSERT INTO tasks VALUES(?,?,?,?,?,?,?,?)",
+            ("legacy-task", "legacy", "preserve me", "queued", "2020-01-01T00:00:00+00:00",
+             "2020-01-01T00:00:00+00:00", None, None),
+        )
+
+    store = TaskStore(db_path)
+    migrated = store.get_task("legacy-task")
+
+    assert migrated["input_text"] == "preserve me"
+    assert migrated["lease_owner"] is None
+    assert migrated["lease_expires_at"] is None
+    assert migrated["attempt_count"] == 0
+    assert store.claim_next_task("migration-worker")["id"] == "legacy-task"
+
+
+def test_concurrent_queue_workers_receive_distinct_task_leases(tmp_path: Path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    db_path = tmp_path / "concurrent-task-claims.sqlite3"
+    first_store = TaskStore(db_path)
+    first_store.create_task("one", "first")
+    first_store.create_task("two", "second")
+    second_store = TaskStore(db_path)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        claims = list(pool.map(
+            lambda pair: pair[0].claim_next_task(pair[1], lease_seconds=60),
+            [(first_store, "worker-one"), (second_store, "worker-two")],
+        ))
+
+    claimed_ids = [item["id"] for item in claims if item is not None]
+    assert len(claimed_ids) == 2
+    assert len(set(claimed_ids)) == 2
+    assert {item["lease_owner"] for item in claims} == {"worker-one", "worker-two"}
+
+
+def test_startup_recovery_clears_interrupted_worker_lease(tmp_path: Path):
+    store = TaskStore(tmp_path / "startup-task-lease.sqlite3")
+    task = store.create_task("interrupted", "inspect after restart")
+    claimed = store.claim_next_task("previous-process", lease_seconds=300)
+    assert claimed["id"] == task["id"]
+
+    assert store.mark_interrupted_as_unknown() == 1
+    saved = store.get_task(task["id"])
+    assert saved["status"] == "unknown"
+    assert saved["lease_owner"] is None
+    assert saved["lease_expires_at"] is None
+    assert not store.finish_task_lease(task["id"], "previous-process", "succeeded")

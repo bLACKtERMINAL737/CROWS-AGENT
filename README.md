@@ -153,7 +153,7 @@ Open these local URLs:
 - API documentation: http://127.0.0.1:8000/docs
 - Health check: http://127.0.0.1:8000/health
 
-## Agent workflows
+## Durable agent task queue\n\nThe opt-in SQLite-backed specialist queue worker is enabled with `CROWS_AGENT_WORKER_ENABLED=true`. It uses atomic oldest-first claims, renewable worker leases, owner-fenced completion, bounded concurrency, and conservative `unknown` outcomes for expired work; uncertain tasks are never replayed automatically. Queue health is available from `GET /tasks/queue/metrics`. See [Durable Agent Task Queue](docs/DURABLE_AGENT_TASK_QUEUE.md) for configuration and recovery semantics.\n\n## Agent workflows
 
 The agent endpoints have different execution guarantees:
 
