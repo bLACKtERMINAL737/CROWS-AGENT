@@ -607,3 +607,37 @@ def test_run_case_url_encodes_task_id_as_one_path_segment(monkeypatch):
 
     assert result["passed"] is True
     assert requested_urls[1] == "http://127.0.0.1:8000/tasks/task%2Fwith%3Freserved"
+
+
+def test_main_reports_output_write_errors_without_traceback(tmp_path, monkeypatch, capsys):
+    cases_path = tmp_path / "cases.json"
+    cases_path.write_text(json.dumps([{
+        "name": "basic",
+        "message": "Say READY",
+        "expected_contains": ["READY"],
+    }]), encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "agent_eval.py",
+            "--cases", str(cases_path),
+            "--output", str(tmp_path / "missing" / "report.json"),
+        ],
+    )
+    monkeypatch.setattr(
+        agent_eval,
+        "_request_json",
+        lambda *_args, **_kwargs: {
+            "answer": "READY",
+            "task_id": None,
+            "tool_calls": 0,
+        },
+    )
+
+    exit_code = agent_eval.main()
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "Could not write evaluation report (FileNotFoundError)" in captured.err
+    assert "Traceback" not in captured.err
+    assert "READY" not in captured.out
