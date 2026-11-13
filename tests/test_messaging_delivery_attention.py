@@ -82,6 +82,7 @@ def test_attention_includes_safe_failure_code_without_private_payload(tmp_path: 
     queued = store.queue_outbound(
         channel="telegram", provider_user_id="secret-recipient",
         text="secret message body", idempotency_key="secret-key",
+        delivery_target="secret-recipient",
     )
     message_id = queued["message"]["id"]
     assert store.claim_outbound(worker_id="worker-1", message_id=message_id)

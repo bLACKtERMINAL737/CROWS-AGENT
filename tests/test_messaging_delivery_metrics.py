@@ -48,7 +48,7 @@ def test_delivery_metrics_returns_zero_counts_for_empty_store(tmp_path: Path):
 def test_delivery_metrics_recent_failures_include_failure_code(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("CROWS_MESSAGING_TARGET_KEY", Fernet.generate_key().decode())
     store = MessagingStore(tmp_path / "failure-metrics.sqlite3")
-    queued = store.queue_outbound(channel="discord", provider_user_id="u", text="private", idempotency_key="k")
+    queued = store.queue_outbound(channel="discord", provider_user_id="u", text="private", idempotency_key="k", delivery_target="recipient")
     message_id = queued["message"]["id"]
     store.claim_outbound(worker_id="worker-1", message_id=message_id)
     store.finish_outbound_lease(message_id, worker_id="worker-1", status="failed", failure_code="provider_http_503")
