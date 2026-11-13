@@ -31,7 +31,7 @@ from .store import IdempotencyConflictError, TaskStore
 from .messaging_store import MessagingStore
 from .messaging_dispatch import InboundDispatchError, InboundDispatchStore
 from .messaging_runtime import inbound_agent_worker_loop
-from .scheduler_store import SchedulerStore
+from .scheduler_store import SCHEDULE_STATUSES, SchedulerStore
 from .messaging import MAX_ID_CHARS, MessagingContractError
 from .messaging_adapters import build_outbound_adapter_registry, OutboundTransportMessage
 from .messaging_gateway import DEFAULT_INBOUND_CHANNELS
@@ -2991,7 +2991,6 @@ def _public_schedule(schedule: dict[str, Any]) -> dict[str, Any]:
             "created_at", "updated_at", "task_id", "result_json", "error_text",
             "retry_count", "recurrence_interval_seconds", "max_occurrences",
             "occurrence_count", "is_paused",
-            "occurrence_count",
         )
     }
 
@@ -3107,10 +3106,21 @@ def scheduler_metrics():
 
 
 @app.get("/scheduler/schedules")
-def list_schedules(limit: int = 50):
+def list_schedules(
+    limit: int = 50, status: str | None = None,
+    paused: bool | None = None, overdue_before: datetime | None = None,
+):
     if not 1 <= limit <= 200:
         raise HTTPException(status_code=400, detail="limit must be between 1 and 200")
-    return {"schedules": [_public_schedule(item) for item in scheduler_store.list_schedules(limit)]}
+    if status is not None and status not in SCHEDULE_STATUSES:
+        raise HTTPException(status_code=400, detail="Invalid schedule status")
+    try:
+        items = scheduler_store.list_schedules(
+            limit, status=status, paused=paused, overdue_before=overdue_before
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"schedules": [_public_schedule(item) for item in items]}
 
 
 @app.get("/scheduler/schedules/{schedule_id}")

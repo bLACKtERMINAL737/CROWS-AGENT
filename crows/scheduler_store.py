@@ -170,12 +170,31 @@ class SchedulerStore:
             row = con.execute("SELECT * FROM scheduled_tasks WHERE id=?", (schedule_id,)).fetchone()
         return dict(row) if row else None
 
-    def list_schedules(self, limit: int = 50) -> list[dict[str, Any]]:
+    def list_schedules(
+        self, limit: int = 50, *, status: str | None = None,
+        paused: bool | None = None, overdue_before: str | datetime | None = None,
+    ) -> list[dict[str, Any]]:
         if not 1 <= limit <= 200:
             raise ValueError("limit must be between 1 and 200")
+        if status is not None and status not in SCHEDULE_STATUSES:
+            raise ValueError("invalid schedule status")
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status is not None:
+            clauses.append("status=?")
+            params.append(status)
+        if paused is not None:
+            clauses.append("is_paused=?")
+            params.append(int(paused))
+        if overdue_before is not None:
+            clauses.extend(("status='scheduled'", "is_paused=0", "run_at<=?"))
+            params.append(_utc(overdue_before))
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        params.append(limit)
         with self.connect() as con:
             rows = con.execute(
-                "SELECT * FROM scheduled_tasks ORDER BY run_at, created_at LIMIT ?", (limit,)
+                "SELECT * FROM scheduled_tasks" + where +
+                " ORDER BY run_at, created_at LIMIT ?", params
             ).fetchall()
         return [dict(row) for row in rows]
 
