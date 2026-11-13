@@ -2977,6 +2977,12 @@ def cancel_schedule(schedule_id: str):
 
 
 
+@app.get("/tasks/queue/metrics")
+def task_queue_metrics():
+    """Expose aggregate task queue counts without worker or lease identifiers."""
+    return store.task_queue_metrics()
+
+
 @app.get("/tasks")
 def list_tasks(limit: int = 50):
     if not 1 <= limit <= 200:
