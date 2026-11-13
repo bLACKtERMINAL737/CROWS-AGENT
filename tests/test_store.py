@@ -898,8 +898,15 @@ def test_durable_task_queue_claims_oldest_task_once_and_tracks_attempts(tmp_path
     assert claimed["status"] == "running"
     assert claimed["lease_owner"] == "worker-a"
     assert claimed["attempt_count"] == 1
-    assert store.claim_next_task("worker-b", lease_seconds=60) is None
-    assert store.get_task(second["id"])["status"] == "queued"
+
+    # A second worker should receive the next queued task, not the task
+    # already leased by worker-a. Queue claiming is not a global single-slot lock.
+    second_claim = store.claim_next_task("worker-b", lease_seconds=60)
+    assert second_claim is not None
+    assert second_claim["id"] == second["id"]
+    assert second_claim["lease_owner"] == "worker-b"
+    assert second_claim["attempt_count"] == 1
+    assert store.claim_next_task("worker-c", lease_seconds=60) is None
 
 
 def test_task_lease_renewal_and_completion_are_owner_fenced(tmp_path: Path):
