@@ -522,9 +522,18 @@ class SchedulerStore:
                  (now + timedelta(seconds=60)).isoformat()),
             ).fetchone()
             scheduled_rows = con.execute(
-                "SELECT run_at FROM scheduled_tasks WHERE status='scheduled' AND run_at<=?",
+                "SELECT run_at FROM scheduled_tasks "
+                "WHERE status='scheduled' AND is_paused=0 AND run_at<=?",
                 (now.isoformat(),),
             ).fetchall()
+            paused_overdue = con.execute(
+                "SELECT COUNT(*) AS count FROM scheduled_tasks "
+                "WHERE status='scheduled' AND is_paused=1 AND run_at<=?",
+                (now.isoformat(),),
+            ).fetchone()["count"]
+            paused_total = con.execute(
+                "SELECT COUNT(*) AS count FROM scheduled_tasks WHERE is_paused=1"
+            ).fetchone()["count"]
             running_rows = con.execute(
                 "SELECT updated_at FROM scheduled_tasks WHERE status='running'"
             ).fetchall()
@@ -545,6 +554,8 @@ class SchedulerStore:
             "oldest_scheduled_run_at": oldest_scheduled,
             "oldest_running_updated_at": oldest_running,
             "oldest_unknown_updated_at": oldest_unknown,
+            "paused_schedule_count": int(paused_total),
+            "paused_overdue_count": int(paused_overdue),
             "overdue_scheduled_count": len(lateness),
             "overdue_lateness_p50_seconds": (
                 lateness[max(0, (len(lateness) + 1) // 2 - 1)] if lateness else 0

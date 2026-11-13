@@ -492,3 +492,19 @@ def test_list_schedules_rejects_unknown_status(tmp_path):
     store = SchedulerStore(tmp_path / "schedule-invalid-filter.sqlite3")
     with pytest.raises(ValueError, match="invalid schedule status"):
         store.list_schedules(status="mystery")
+
+
+def test_scheduler_metrics_separates_paused_overdue_from_actionable_overdue(tmp_path):
+    store = SchedulerStore(tmp_path / "scheduler-metrics-paused.sqlite3")
+    active = store.create_schedule(
+        "Actionable overdue", "Run", "2026-01-01T00:00:00+00:00", "metrics-active"
+    )
+    paused = store.create_schedule(
+        "Paused overdue", "Run", "2026-01-02T00:00:00+00:00", "metrics-paused"
+    )
+    assert store.pause_schedule(paused["id"])
+    metrics = store.metrics()
+    assert metrics["paused_schedule_count"] == 1
+    assert metrics["paused_overdue_count"] == 1
+    assert metrics["overdue_scheduled_count"] == 1
+    assert metrics["overdue_lateness_p50_seconds"] > 0
