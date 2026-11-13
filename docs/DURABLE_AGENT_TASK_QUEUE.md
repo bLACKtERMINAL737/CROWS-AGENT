@@ -29,3 +29,11 @@ The worker shares the existing server-process ownership lock. SQLite is the dura
 ## Queue health
 
 `GET /tasks/queue/metrics` returns aggregate task counts, attempts, queued counts by base priority, oldest queued timestamp and age in seconds, plus the highest effective priority under the 30-minute aging policy. It intentionally omits task IDs, worker IDs, and lease tokens.
+
+
+## Scheduler recovery controls
+
+- A schedule can be explicitly retried only after it reaches the definitive `failed` state: `POST /scheduler/schedules/{id}/retry` with a timezone-aware `run_at` and an operator reason.
+- Each retry increments the durable `retry_count` and records the previous task ID, reason, requested time, retry number, and timestamp in the schedule retry audit.
+- `GET /scheduler/schedules/{id}/retry-audit` exposes that history for operator review.
+- Running, scheduled, completed, cancelled, and especially `unknown` schedules cannot use this retry path. Unknown execution must be reconciled against the task journal/provider evidence first; it is never blindly replayed.
