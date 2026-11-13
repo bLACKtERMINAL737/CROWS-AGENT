@@ -945,3 +945,50 @@ def test_task_queue_metrics_are_aggregate_and_include_attempts(tmp_path: Path):
     assert metrics["queued"] == 1
     assert metrics["running"] == 1
     assert metrics["total_attempts"] == 1
+
+
+def test_existing_task_database_migrates_lease_columns_without_losing_tasks(tmp_path: Path):
+    import sqlite3
+
+    db_path = tmp_path / "legacy-task-schema.sqlite3"
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            "CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT NOT NULL, input_text TEXT NOT NULL, "
+            "status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, "
+            "result_json TEXT, error_text TEXT)"
+        )
+        con.execute(
+            "INSERT INTO tasks VALUES(?,?,?,?,?,?,?,?)",
+            ("legacy-task", "legacy", "preserve me", "queued", "2020-01-01T00:00:00+00:00",
+             "2020-01-01T00:00:00+00:00", None, None),
+        )
+
+    store = TaskStore(db_path)
+    migrated = store.get_task("legacy-task")
+
+    assert migrated["input_text"] == "preserve me"
+    assert migrated["lease_owner"] is None
+    assert migrated["lease_expires_at"] is None
+    assert migrated["attempt_count"] == 0
+    assert store.claim_next_task("migration-worker")["id"] == "legacy-task"
+
+
+def test_concurrent_queue_workers_receive_distinct_task_leases(tmp_path: Path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    db_path = tmp_path / "concurrent-task-claims.sqlite3"
+    first_store = TaskStore(db_path)
+    first_store.create_task("one", "first")
+    first_store.create_task("two", "second")
+    second_store = TaskStore(db_path)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        claims = list(pool.map(
+            lambda pair: pair[0].claim_next_task(pair[1], lease_seconds=60),
+            [(first_store, "worker-one"), (second_store, "worker-two")],
+        ))
+
+    claimed_ids = [item["id"] for item in claims if item is not None]
+    assert len(claimed_ids) == 2
+    assert len(set(claimed_ids)) == 2
+    assert {item["lease_owner"] for item in claims} == {"worker-one", "worker-two"}
