@@ -1003,3 +1003,34 @@ async def test_global_agent_concurrency_is_shared_across_workflows(tmp_path, mon
     assert direct["status"] == "succeeded"
     assert first["global_max_concurrency"] == second["global_max_concurrency"] == 2
     assert 1 < peak_active <= 2
+
+
+def test_workflow_listing_uses_stable_bounded_pagination(tmp_path, monkeypatch):
+    store, _router = configure(monkeypatch, tmp_path)
+    created = [
+        store.create_workflow(f"Workflow {index}", [{"title": "Task", "input": "Run"}])
+        for index in range(5)
+    ]
+    ordered = store.list_workflows(limit=5)
+    assert len(ordered) == 5
+    assert [item["id"] for item in store.list_workflows(limit=2, offset=0)] == [
+        item["id"] for item in ordered[:2]
+    ]
+    assert [item["id"] for item in store.list_workflows(limit=2, offset=2)] == [
+        item["id"] for item in ordered[2:4]
+    ]
+    assert [item["id"] for item in store.list_workflows(limit=2, offset=4)] == [
+        item["id"] for item in ordered[4:]
+    ]
+    with pytest.raises(ValueError, match="limit or offset"):
+        store.list_workflows(limit=201)
+    with pytest.raises(ValueError, match="limit or offset"):
+        store.list_workflows(offset=-1)
+
+
+def test_workflow_listing_api_validates_offset(tmp_path, monkeypatch):
+    _store, _router = configure(monkeypatch, tmp_path)
+    assert app_module.list_agent_workflows(limit=10, offset=0)["workflows"] == []
+    with pytest.raises(HTTPException) as error:
+        app_module.list_agent_workflows(limit=10, offset=-1)
+    assert error.value.status_code == 400

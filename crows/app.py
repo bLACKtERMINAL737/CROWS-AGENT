@@ -1632,11 +1632,13 @@ def _rebuild_workflow_recovery_diagnostics(checkpoint: dict[str, Any]) -> dict[s
 
 
 @app.get("/agents/workflows")
-def list_agent_workflows(limit: int = 50):
-    """List durable workflow runs and their current status."""
-    if not 1 <= limit <= 200:
-        raise HTTPException(status_code=400, detail="limit must be between 1 and 200")
-    return {"workflows": store.list_workflows(limit)}
+def list_agent_workflows(limit: int = 50, offset: int = 0):
+    """List durable workflow runs with stable, bounded pagination."""
+    if not 1 <= limit <= 200 or not 0 <= offset <= 1_000_000:
+        raise HTTPException(
+            status_code=400, detail="limit or offset is outside its allowed range"
+        )
+    return {"workflows": store.list_workflows(limit, offset=offset)}
 
 
 @app.get("/agents/workflows/{workflow_id}")

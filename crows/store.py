@@ -676,13 +676,14 @@ class TaskStore:
         result["control_state"] = self.get_workflow_control(workflow_id)
         return result
 
-    def list_workflows(self, limit: int = 50) -> list[dict[str, Any]]:
-        if not 1 <= limit <= 200:
-            raise ValueError("limit must be between 1 and 200")
+    def list_workflows(self, limit: int = 50, *, offset: int = 0) -> list[dict[str, Any]]:
+        if not 1 <= limit <= 200 or not 0 <= offset <= 1_000_000:
+            raise ValueError("limit or offset is outside its allowed range")
         with self.connect() as con:
             rows = con.execute(
-                "SELECT id FROM agent_workflows ORDER BY created_at DESC LIMIT ?",
-                (limit,),
+                "SELECT id FROM agent_workflows "
+                "ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+                (limit, offset),
             ).fetchall()
         return [
             workflow for row in rows
