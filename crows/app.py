@@ -2969,6 +2969,7 @@ def _public_schedule(schedule: dict[str, Any]) -> dict[str, Any]:
         for key in (
             "id", "title", "input_text", "run_at", "status",
             "created_at", "updated_at", "task_id", "result_json", "error_text",
+            "retry_count",
         )
     }
 
