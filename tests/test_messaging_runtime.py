@@ -182,3 +182,35 @@ async def test_shared_runtime_accepts_explicit_channel_policy_and_applies_reply_
     assert outbound["status"] == "accepted"
     assert outbound["text"] == "Hello"
     assert "Matrix" in router.calls[0][0]
+
+
+@pytest.mark.asyncio
+async def test_checkpointed_reply_recovers_after_outbox_failure_without_second_model_call(runtime, monkeypatch):
+    messages, dispatches, sessions, router = runtime
+    _, session, queued = enqueue_telegram(runtime)
+    claimed = dispatches.claim(worker_id="worker-1", limit=1)[0]
+    original_queue, calls = messages.queue_outbound, 0
+    def fail_once(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("simulated outbox write interruption")
+        return original_queue(**kwargs)
+    monkeypatch.setattr(messages, "queue_outbound", fail_once)
+    first = await process_inbound_dispatch(claimed, worker_id="worker-1", dispatches=dispatches, messages=messages, sessions=sessions, router=router)
+    assert first == "pending"
+    assert dispatches.get(queued["id"])["reply_text"] == "Hello from Crows"
+    reclaimed = dispatches.claim(worker_id="worker-2", limit=1)[0]
+    second = await process_inbound_dispatch(reclaimed, worker_id="worker-2", dispatches=dispatches, messages=messages, sessions=sessions, router=router)
+    assert second == "completed" and len(router.calls) == 1
+    assert [(r["role"], r["content"]) for r in sessions.list_session_messages(session["id"])] == [("user", "hi"), ("assistant", "Hello from Crows")]
+    assert messages.get_outbound("telegram", f"inbound-reply:{queued['id']}")["text"] == "Hello from Crows"
+
+
+def test_add_session_turn_once_is_idempotent(runtime):
+    _, _, sessions, _ = runtime
+    session = sessions.create_session(title="New conversation")
+    first = sessions.add_session_turn_once("dispatch-123", session["id"], "hello", "hi")
+    second = sessions.add_session_turn_once("dispatch-123", session["id"], "hello", "hi")
+    assert [r["id"] for r in first] == [r["id"] for r in second]
+    assert len(sessions.list_session_messages(session["id"])) == 2

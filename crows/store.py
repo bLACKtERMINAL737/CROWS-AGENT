@@ -1105,6 +1105,62 @@ class TaskStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def add_session_turn_once(
+        self, dispatch_id: str, session_id: str, user_content: str, assistant_content: str,
+    ) -> list[dict[str, Any]]:
+        """Persist an inbound turn exactly once using stable message identifiers."""
+        if not isinstance(dispatch_id, str) or not dispatch_id.strip() or len(dispatch_id) > 128:
+            raise ValueError("dispatch_id is invalid")
+        user_id, assistant_id = f"inbound-{dispatch_id}-user", f"inbound-{dispatch_id}-assistant"
+        user_created_at, assistant_created_at = utc_now(), utc_now()
+        if assistant_created_at <= user_created_at:
+            from datetime import timedelta
+            assistant_created_at = (
+                datetime.fromisoformat(user_created_at) + timedelta(microseconds=1)
+            ).isoformat()
+        with self.connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            if not con.execute("SELECT 1 FROM sessions WHERE id=?", (session_id,)).fetchone():
+                raise KeyError("Session not found")
+            existing = con.execute(
+                "SELECT id,session_id,role,content FROM session_messages WHERE id IN (?, ?)",
+                (user_id, assistant_id),
+            ).fetchall()
+            if existing:
+                actual = {(r["id"], r["session_id"], r["role"], r["content"]) for r in existing}
+                expected = {(user_id, session_id, "user", user_content), (assistant_id, session_id, "assistant", assistant_content)}
+                if actual != expected:
+                    raise ValueError("dispatch_id was already used for a different session turn")
+                return [dict(r) for r in con.execute(
+                    "SELECT * FROM session_messages WHERE id IN (?, ?) ORDER BY CASE id WHEN ? THEN 0 ELSE 1 END",
+                    (user_id, assistant_id, user_id),
+                ).fetchall()]
+            latest = con.execute(
+                "SELECT MAX(created_at) AS created_at FROM session_messages WHERE session_id=?",
+                (session_id,),
+            ).fetchone()["created_at"]
+            if latest is not None and user_created_at <= latest:
+                from datetime import timedelta
+                user_created_at = (datetime.fromisoformat(latest) + timedelta(microseconds=1)).isoformat()
+                assistant_created_at = (datetime.fromisoformat(user_created_at) + timedelta(microseconds=1)).isoformat()
+            con.execute("INSERT INTO session_messages(id,session_id,role,content,created_at) VALUES(?,?,?,?,?)",
+                        (user_id, session_id, "user", user_content, user_created_at))
+            con.execute("INSERT INTO session_messages(id,session_id,role,content,created_at) VALUES(?,?,?,?,?)",
+                        (assistant_id, session_id, "assistant", assistant_content, assistant_created_at))
+            con.executemany(
+                "INSERT INTO session_message_search_terms(message_id, term) VALUES(?, ?)",
+                [(mid, token) for mid, content in ((user_id, user_content), (assistant_id, assistant_content))
+                 for token in _memory_search_tokens(content)],
+            )
+            title = user_content.strip().replace("\\n", " ")[:80] or "New conversation"
+            con.execute("UPDATE sessions SET updated_at=?, title=CASE WHEN title='New conversation' THEN ? ELSE title END WHERE id=?",
+                        (assistant_created_at, title, session_id))
+            rows = con.execute(
+                "SELECT * FROM session_messages WHERE id IN (?, ?) ORDER BY CASE id WHEN ? THEN 0 ELSE 1 END",
+                (user_id, assistant_id, user_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def list_session_messages(self, session_id: str, limit: int = 100) -> list[dict[str, Any]]:
         # Use the declared primary key rather than SQLite rowid; the table may be
         # backed by a WITHOUT ROWID schema in an existing local database.
