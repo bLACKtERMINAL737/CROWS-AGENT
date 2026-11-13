@@ -984,7 +984,7 @@ async def test_global_agent_concurrency_is_shared_across_workflows(tmp_path, mon
             "tool_attempts": 0,
         }
 
-    monkeypatch.setattr(app_module, "run_agent_task", fake_run)
+    monkeypatch.setattr(app_module, "_run_agent_task_unlimited", fake_run)
     first, second = await asyncio.gather(
         app_module.orchestrate_agent_work(
             app_module.AgentPlanRequest(goal="First concurrent workflow")
