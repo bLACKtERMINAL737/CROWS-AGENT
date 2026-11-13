@@ -341,6 +341,10 @@ class ScheduleCreateRequest(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=256)
 
 
+class ScheduleRescheduleRequest(BaseModel):
+    run_at: str = Field(min_length=1, max_length=80)
+
+
 
 
 class AgentPlanRequest(BaseModel):
@@ -2972,6 +2976,22 @@ def create_schedule(request: ScheduleCreateRequest):
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _public_schedule(saved)
+
+
+@app.patch("/scheduler/schedules/{schedule_id}")
+def reschedule_schedule(schedule_id: str, request: ScheduleRescheduleRequest):
+    try:
+        saved = scheduler_store.reschedule_schedule(schedule_id, request.run_at)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Schedule not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if saved is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Only pending schedules can be rescheduled",
+        )
     return _public_schedule(saved)
 
 

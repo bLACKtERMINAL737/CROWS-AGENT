@@ -131,3 +131,59 @@ def test_reconciliation_api_rejects_pending_schedule_and_requires_auth(monkeypat
     assert client.post(
         f"/scheduler/schedules/{schedule_id}/reconcile", json=body
     ).status_code == 401
+
+
+def test_reschedule_pending_schedule_normalizes_time_and_preserves_identity(monkeypatch, tmp_path):
+    client = make_client(monkeypatch, tmp_path)
+    created = client.post("/scheduler/schedules", json=payload(), headers=auth())
+    schedule_id = created.json()["id"]
+
+    response = client.patch(
+        f"/scheduler/schedules/{schedule_id}",
+        json={"run_at": "2026-11-02T12:00:00+02:00"},
+        headers=auth(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["id"] == schedule_id
+    assert response.json()["run_at"] == "2026-11-02T10:00:00+00:00"
+    assert response.json()["status"] == "scheduled"
+    assert "idempotency_key" not in response.json()
+
+
+def test_reschedule_rejects_running_terminal_missing_and_naive_times(monkeypatch, tmp_path):
+    client = make_client(monkeypatch, tmp_path)
+    created = client.post("/scheduler/schedules", json=payload(), headers=auth())
+    schedule_id = created.json()["id"]
+
+    naive = client.patch(
+        f"/scheduler/schedules/{schedule_id}",
+        json={"run_at": "2026-11-02T12:00:00"},
+        headers=auth(),
+    )
+    assert naive.status_code == 422
+
+    scheduler = app_module.scheduler_store
+    scheduler.claim_due("reschedule-worker", now="2026-11-01T10:01:00+00:00")
+    running = client.patch(
+        f"/scheduler/schedules/{schedule_id}",
+        json={"run_at": "2026-11-03T10:00:00+00:00"},
+        headers=auth(),
+    )
+    assert running.status_code == 409
+
+    missing = client.patch(
+        "/scheduler/schedules/missing",
+        json={"run_at": "2026-11-03T10:00:00+00:00"},
+        headers=auth(),
+    )
+    assert missing.status_code == 404
+
+
+def test_reschedule_requires_authentication(monkeypatch, tmp_path):
+    client = make_client(monkeypatch, tmp_path)
+    response = client.patch(
+        "/scheduler/schedules/missing",
+        json={"run_at": "2026-11-03T10:00:00+00:00"},
+    )
+    assert response.status_code == 401
