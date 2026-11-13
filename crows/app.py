@@ -23,6 +23,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
+from .agent_concurrency import agent_execution_slot
 from .coding import CodingEngine, CodingError
 from .config import Settings, get_env
 from .provider import ModelProvider, ModelRouter, ProviderNotConfigured
@@ -2113,6 +2114,13 @@ async def orchestrate_agent_work(request: AgentPlanRequest):
     except (TypeError, ValueError):
         configured_concurrency = 3
     max_concurrency = min(max(configured_concurrency, 1), 3)
+    try:
+        configured_global_concurrency = int(
+            get_env("CROWS_AGENT_GLOBAL_MAX_CONCURRENCY", "3")
+        )
+    except (TypeError, ValueError):
+        configured_global_concurrency = 3
+    global_max_concurrency = min(max(configured_global_concurrency, 1), 3)
     task_timeout_seconds = agent_task_timeout_seconds()
 
     if request.idempotency_key is not None:
@@ -2223,10 +2231,11 @@ async def orchestrate_agent_work(request: AgentPlanRequest):
 
     async def run_task_with_timeout(task_id: str) -> dict[str, Any]:
         try:
-            return await asyncio.wait_for(
-                run_agent_task(task_id),
-                timeout=task_timeout_seconds,
-            )
+            async with agent_execution_slot(global_max_concurrency):
+                return await asyncio.wait_for(
+                    run_agent_task(task_id),
+                    timeout=task_timeout_seconds,
+                )
         except asyncio.TimeoutError:
             saved_task = store.get_task(task_id)
             # A timed-out operation may have made progress before cancellation.
@@ -2441,6 +2450,7 @@ async def orchestrate_agent_work(request: AgentPlanRequest):
                 "workspace_modified": False,
                 "approval_required_before_changes": True,
                 "max_concurrency": max_concurrency,
+                "global_max_concurrency": global_max_concurrency,
                 "task_timeout_seconds": task_timeout_seconds,
                 "diagnostics": checkpoint["diagnostics"],
             }
@@ -2513,6 +2523,7 @@ async def orchestrate_agent_work(request: AgentPlanRequest):
             "workspace_modified": False,
             "approval_required_before_changes": True,
             "max_concurrency": max_concurrency,
+            "global_max_concurrency": global_max_concurrency,
             "task_timeout_seconds": task_timeout_seconds,
             "diagnostics": checkpoint["diagnostics"],
             "idempotent_replay": False,
