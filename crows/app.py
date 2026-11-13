@@ -23,6 +23,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
+from .agent_concurrency import agent_execution_slot
 from .coding import CodingEngine, CodingError
 from .config import Settings, get_env
 from .provider import ModelProvider, ModelRouter, ProviderNotConfigured
@@ -150,6 +151,15 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Crows API", version="0.4.0",
               description="Local-first hybrid AI agent MVP. Bind to localhost only.", lifespan=lifespan)
 app.add_middleware(LocalAPIProtection)
+
+
+def agent_global_max_concurrency() -> int:
+    """Return the bounded server-wide specialist execution budget."""
+    try:
+        configured = int(get_env("CROWS_AGENT_GLOBAL_MAX_CONCURRENCY", "3"))
+    except (TypeError, ValueError):
+        configured = 3
+    return min(max(configured, 1), 3)
 
 
 def agent_task_timeout_seconds() -> float:
@@ -1758,11 +1768,14 @@ async def recover_agent_workflow(workflow_id: str):
     try:
         recovery_timeout_seconds = agent_task_timeout_seconds()
 
+        recovery_global_concurrency = agent_global_max_concurrency()
+
         async def run_recovery_task_with_timeout(task_id: str) -> dict[str, Any]:
             try:
-                return await asyncio.wait_for(
-                    run_agent_task(task_id), timeout=recovery_timeout_seconds
-                )
+                async with agent_execution_slot(recovery_global_concurrency):
+                    return await asyncio.wait_for(
+                        run_agent_task(task_id), timeout=recovery_timeout_seconds
+                    )
             except asyncio.TimeoutError as exc:
                 saved_task = store.get_task(task_id)
                 # A timeout may occur after a tool has already acted. Never make the
@@ -2113,6 +2126,7 @@ async def orchestrate_agent_work(request: AgentPlanRequest):
     except (TypeError, ValueError):
         configured_concurrency = 3
     max_concurrency = min(max(configured_concurrency, 1), 3)
+    global_max_concurrency = agent_global_max_concurrency()
     task_timeout_seconds = agent_task_timeout_seconds()
 
     if request.idempotency_key is not None:
@@ -2223,10 +2237,11 @@ async def orchestrate_agent_work(request: AgentPlanRequest):
 
     async def run_task_with_timeout(task_id: str) -> dict[str, Any]:
         try:
-            return await asyncio.wait_for(
-                run_agent_task(task_id),
-                timeout=task_timeout_seconds,
-            )
+            async with agent_execution_slot(global_max_concurrency):
+                return await asyncio.wait_for(
+                    run_agent_task(task_id),
+                    timeout=task_timeout_seconds,
+                )
         except asyncio.TimeoutError:
             saved_task = store.get_task(task_id)
             # A timed-out operation may have made progress before cancellation.
@@ -2441,6 +2456,7 @@ async def orchestrate_agent_work(request: AgentPlanRequest):
                 "workspace_modified": False,
                 "approval_required_before_changes": True,
                 "max_concurrency": max_concurrency,
+                "global_max_concurrency": global_max_concurrency,
                 "task_timeout_seconds": task_timeout_seconds,
                 "diagnostics": checkpoint["diagnostics"],
             }
@@ -2513,6 +2529,7 @@ async def orchestrate_agent_work(request: AgentPlanRequest):
             "workspace_modified": False,
             "approval_required_before_changes": True,
             "max_concurrency": max_concurrency,
+            "global_max_concurrency": global_max_concurrency,
             "task_timeout_seconds": task_timeout_seconds,
             "diagnostics": checkpoint["diagnostics"],
             "idempotent_replay": False,
