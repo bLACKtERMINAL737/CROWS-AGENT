@@ -1086,6 +1086,37 @@ def test_queue_metrics_include_priority_backlog_and_oldest_queued_time(tmp_path:
     assert metrics["oldest_queued_at"] == low["created_at"]
 
 
+def test_queue_metrics_report_queue_latency_and_lease_health(tmp_path: Path):
+    from datetime import datetime, timedelta, timezone
+
+    store = TaskStore(tmp_path / "task-queue-health.sqlite3")
+    running = store.create_task("running", "in progress")
+    assert store.claim_next_task("health-worker", lease_seconds=120)["id"] == running["id"]
+    old = store.create_task("old queued", "waiting")
+    now = datetime.now(timezone.utc)
+    with store.connect() as con:
+        con.execute(
+            "UPDATE tasks SET created_at=? WHERE id=?",
+            ((now - timedelta(minutes=10)).isoformat(), old["id"]),
+        )
+        con.execute(
+            "UPDATE tasks SET created_at=?,lease_expires_at=? WHERE id=?",
+            (
+                (now - timedelta(minutes=5)).isoformat(),
+                (now + timedelta(seconds=30)).isoformat(),
+                running["id"],
+            ),
+        )
+
+    metrics = store.task_queue_metrics()
+    assert metrics["queued_age_p50_seconds"] >= 590
+    assert metrics["queued_age_p95_seconds"] >= 590
+    assert metrics["oldest_running_created_at"] is not None
+    assert metrics["oldest_running_age_seconds"] >= 290
+    assert metrics["running_with_expired_lease_count"] == 0
+    assert metrics["leases_expiring_within_60_seconds"] == 1
+
+
 def test_equal_priority_and_timestamp_preserve_insertion_order(tmp_path: Path):
     store = TaskStore(tmp_path / "priority-fifo-ties.sqlite3")
     first = store.create_task("first", "inserted first", priority=3)
