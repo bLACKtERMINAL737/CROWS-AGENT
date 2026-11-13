@@ -779,6 +779,107 @@ async def run_agent_task_with_lease_renewal(task_id: str, schedule_id: str, work
         await asyncio.gather(heartbeat, execution, return_exceptions=True)
 
 
+async def run_agent_task_with_worker_lease(task_id: str, worker_id: str) -> None:
+    """Execute a leased task while renewing ownership and enforcing global admission."""
+    async def renew_while_running():
+        while True:
+            await asyncio.sleep(30)
+            if not store.renew_task_lease(task_id, worker_id, lease_seconds=120):
+                raise RuntimeError("Agent task lease ownership was lost during execution")
+
+    async def execute():
+        async with agent_execution_slot(agent_global_max_concurrency()):
+            return await asyncio.wait_for(
+                _run_agent_task_unlimited(task_id, worker_id=worker_id),
+                timeout=agent_task_timeout_seconds(),
+            )
+
+    execution = asyncio.create_task(execute())
+    heartbeat = asyncio.create_task(renew_while_running())
+    try:
+        done, _ = await asyncio.wait(
+            {execution, heartbeat}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if heartbeat in done:
+            heartbeat.result()
+        await execution
+    except asyncio.CancelledError:
+        for task in (heartbeat, execution):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(heartbeat, execution, return_exceptions=True)
+        store.finish_task_lease(
+            task_id, worker_id, "unknown",
+            error="Agent worker stopped during execution; inspect task journal before recovery.",
+        )
+        raise
+    except Exception as exc:
+        for task in (heartbeat, execution):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(heartbeat, execution, return_exceptions=True)
+        store.finish_task_lease(
+            task_id, worker_id, "failed",
+            error=f"Agent worker execution failed ({type(exc).__name__}); inspect task journal.",
+        )
+        logger.warning("Durable agent task %s did not complete: %s", task_id, type(exc).__name__)
+
+
+async def agent_task_worker_loop() -> None:
+    """Continuously drain the durable task queue with bounded leased workers."""
+    try:
+        interval = float(get_env("CROWS_AGENT_WORKER_INTERVAL_SECONDS", "1"))
+    except (TypeError, ValueError):
+        interval = 1.0
+    if not math.isfinite(interval):
+        interval = 1.0
+    interval = min(max(interval, 0.25), 30.0)
+    try:
+        configured_workers = int(
+            get_env("CROWS_AGENT_WORKER_CONCURRENCY", str(agent_global_max_concurrency()))
+        )
+    except (TypeError, ValueError):
+        configured_workers = agent_global_max_concurrency()
+    worker_limit = min(max(configured_workers, 1), agent_global_max_concurrency(), 3)
+    worker_id = f"crows-agent-{os.getpid()}"
+    active: set[asyncio.Task] = set()
+    while True:
+        try:
+            expired = store.mark_expired_task_leases_unknown()
+            if expired:
+                logger.warning("Marked %s expired agent task leases unknown", expired)
+            while len(active) < worker_limit:
+                item = store.claim_next_task(worker_id, lease_seconds=120)
+                if item is None:
+                    break
+                task = asyncio.create_task(
+                    run_agent_task_with_worker_lease(item["id"], worker_id)
+                )
+                active.add(task)
+            if active:
+                done, active = await asyncio.wait(
+                    active, timeout=interval, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in done:
+                    try:
+                        task.result()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.exception("Durable agent task worker failed unexpectedly")
+            else:
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            for task in active:
+                task.cancel()
+            if active:
+                await asyncio.gather(*active, return_exceptions=True)
+            raise
+        except Exception:
+            logger.exception("Durable agent task queue iteration failed")
+            await asyncio.sleep(interval)
+
+
 async def scheduler_worker_loop() -> None:
     """Dispatch due schedules through the existing read-only specialist runner."""
     try:
