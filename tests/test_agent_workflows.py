@@ -1034,3 +1034,45 @@ def test_workflow_listing_api_validates_offset(tmp_path, monkeypatch):
     with pytest.raises(HTTPException) as error:
         app_module.list_agent_workflows(limit=10, offset=-1)
     assert error.value.status_code == 400
+
+
+def test_workflow_listing_filters_status_and_control_state(tmp_path, monkeypatch):
+    store, _router = configure(monkeypatch, tmp_path)
+    running = store.create_workflow("Running", [{"title": "Task", "input": "Run"}])
+    paused = store.create_workflow("Paused", [{"title": "Task", "input": "Run"}])
+    store.set_workflow_control(paused["id"], "paused")
+    failed = store.create_workflow("Failed", [{"title": "Task", "input": "Run"}])
+    store.update_workflow(failed["id"], "failed", results={"tasks": []})
+
+    assert [item["id"] for item in store.list_workflows(status="running")] == [
+        paused["id"], running["id"]
+    ]
+    assert [item["id"] for item in store.list_workflows(control_state="paused")] == [
+        paused["id"]
+    ]
+    assert [item["id"] for item in store.list_workflows(status="failed")] == [
+        failed["id"]
+    ]
+    assert [item["id"] for item in store.list_workflows(
+        status="running", control_state="paused"
+    )] == [paused["id"]]
+    with pytest.raises(ValueError, match="status filter"):
+        store.list_workflows(status="not-a-status")
+    with pytest.raises(ValueError, match="control-state filter"):
+        store.list_workflows(control_state="not-a-state")
+
+
+def test_workflow_listing_api_filters_and_rejects_invalid_filters(tmp_path, monkeypatch):
+    store, _router = configure(monkeypatch, tmp_path)
+    paused = store.create_workflow("Paused API", [{"title": "Task", "input": "Run"}])
+    store.set_workflow_control(paused["id"], "paused")
+    monkeypatch.setattr(app_module, "store", store)
+
+    response = app_module.list_agent_workflows(control_state="paused")
+    assert [item["id"] for item in response["workflows"]] == [paused["id"]]
+    with pytest.raises(HTTPException) as error:
+        app_module.list_agent_workflows(status="invalid")
+    assert error.value.status_code == 400
+    with pytest.raises(HTTPException) as error:
+        app_module.list_agent_workflows(control_state="invalid")
+    assert error.value.status_code == 400
