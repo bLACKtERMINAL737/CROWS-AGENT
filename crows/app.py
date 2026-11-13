@@ -911,14 +911,38 @@ async def deliver_outbound_batch(
                 )
                 outcomes["failed"] += 1
                 continue
-            receipt = await adapter.send(
-                OutboundTransportMessage(
-                    channel=channel,
-                    delivery_target=target,
-                    text=item["text"],
-                    idempotency_key=item["idempotency_key"],
+            try:
+                receipt = await adapter.send(
+                    OutboundTransportMessage(
+                        channel=channel,
+                        delivery_target=target,
+                        text=item["text"],
+                        idempotency_key=item["idempotency_key"],
+                    )
                 )
-            )
+            except (httpx.HTTPError, ValueError) as exc:
+                finished = messaging_store.finish_outbound_lease(
+                    message_id, worker_id=worker_id, status="unknown",
+                    failure_code="transport_" + type(exc).__name__.lower(),
+                )
+                if finished:
+                    outcomes["unknown"] += 1
+                else:
+                    outcomes["skipped"] += 1
+                continue
+            except Exception:
+                # An adapter bug or unexpected provider-client failure must not
+                # abort the rest of the batch. Delivery outcome is uncertain,
+                # so persist unknown and never automatically replay it.
+                finished = messaging_store.finish_outbound_lease(
+                    message_id, worker_id=worker_id, status="unknown",
+                    failure_code="transport_unexpected_error",
+                )
+                if finished:
+                    outcomes["unknown"] += 1
+                else:
+                    outcomes["skipped"] += 1
+                continue
             if receipt.status_code == 429:
                 retry_result = messaging_store.retry_outbound_lease(
                     message_id, worker_id=worker_id,
