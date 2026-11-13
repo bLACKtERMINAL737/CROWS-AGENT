@@ -216,15 +216,28 @@ def run_case(
                     token=token,
                     timeout=timeout,
                 )
-                task_status = str(task.get("status", "unknown"))
+                raw_status = task.get("status", "unknown")
+                if not isinstance(raw_status, str) or raw_status not in {
+                    "succeeded", "failed", "unknown", "not_created"
+                }:
+                    task_status = "unknown"
+                    checks.append("invalid_task_status")
+                else:
+                    task_status = raw_status
                 executions = task.get("tool_executions", [])
-                if isinstance(executions, list):
-                    for execution in executions:
-                        if not isinstance(execution, dict):
-                            continue
-                        name = str(execution.get("tool_name") or execution.get("name") or "")
-                        if name:
-                            tool_names.append(name)
+                if not isinstance(executions, list):
+                    checks.append("invalid_tool_execution_list")
+                    executions = []
+                for execution in executions:
+                    if not isinstance(execution, dict):
+                        checks.append("invalid_tool_execution")
+                        continue
+                    raw_name = execution.get("tool_name") or execution.get("name")
+                    if not isinstance(raw_name, str) or not raw_name.strip():
+                        checks.append("invalid_tool_execution")
+                        continue
+                    name = raw_name
+                    tool_names.append(name)
                         raw_arguments = execution.get("input_json", execution.get("arguments"))
                         if isinstance(raw_arguments, str):
                             try:
