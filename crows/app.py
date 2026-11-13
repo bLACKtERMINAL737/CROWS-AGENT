@@ -345,6 +345,8 @@ class ScheduleCreateRequest(BaseModel):
     input: str = Field(min_length=1, max_length=20_000)
     run_at: str = Field(min_length=1, max_length=80)
     idempotency_key: str = Field(min_length=1, max_length=256)
+    recurrence_interval_seconds: int | None = Field(default=None, ge=60, le=31_536_000)
+    max_occurrences: int | None = Field(default=None, ge=2, le=1000)
 
 
 class ScheduleRescheduleRequest(BaseModel):
@@ -2987,7 +2989,8 @@ def _public_schedule(schedule: dict[str, Any]) -> dict[str, Any]:
         for key in (
             "id", "title", "input_text", "run_at", "status",
             "created_at", "updated_at", "task_id", "result_json", "error_text",
-            "retry_count",
+            "retry_count", "recurrence_interval_seconds", "max_occurrences",
+            "occurrence_count",
         )
     }
 
@@ -2996,7 +2999,9 @@ def _public_schedule(schedule: dict[str, Any]) -> dict[str, Any]:
 def create_schedule(request: ScheduleCreateRequest):
     try:
         saved = scheduler_store.create_schedule(
-            request.title, request.input, request.run_at, request.idempotency_key
+            request.title, request.input, request.run_at, request.idempotency_key,
+            recurrence_interval_seconds=request.recurrence_interval_seconds,
+            max_occurrences=request.max_occurrences,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -3036,6 +3041,14 @@ def retry_failed_schedule(schedule_id: str, request: ScheduleRetryRequest):
             detail="Schedule is not definitively failed or its retry budget is exhausted; reconcile unknown work first",
         )
     return _public_schedule(saved)
+
+
+@app.get("/scheduler/schedules/{schedule_id}/execution-history")
+def schedule_execution_history(schedule_id: str):
+    try:
+        return {"entries": scheduler_store.list_execution_history(schedule_id)}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Schedule not found") from exc
 
 
 @app.get("/scheduler/schedules/{schedule_id}/retry-audit")
