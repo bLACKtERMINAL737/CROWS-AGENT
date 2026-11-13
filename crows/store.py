@@ -277,6 +277,25 @@ class TaskStore:
                     "ON messaging_session_routes(channel, updated_at DESC)"
                 )
 
+            task_columns = {
+                row["name"] for row in con.execute("PRAGMA table_info(tasks)").fetchall()
+            }
+            for column, declaration in (
+                ("lease_owner", "TEXT"),
+                ("lease_expires_at", "TEXT"),
+                ("attempt_count", "INTEGER NOT NULL DEFAULT 0"),
+            ):
+                if column not in task_columns:
+                    con.execute(f"ALTER TABLE tasks ADD COLUMN {column} {declaration}")
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_dispatch_queue "
+                "ON tasks(status, created_at, id)"
+            )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_expired_leases "
+                "ON tasks(status, lease_expires_at)"
+            )
+
     def create_task(self, title: str, input_text: str) -> dict[str, Any]:
         now, task_id = utc_now(), str(uuid4())
         with self.connect() as con:
@@ -298,7 +317,8 @@ class TaskStore:
         """Atomically transition a queued task to running; only one caller can claim it."""
         with self.connect() as con:
             cursor = con.execute(
-                "UPDATE tasks SET status='running',updated_at=?,result_json=NULL,error_text=NULL "
+                "UPDATE tasks SET status='running',updated_at=?,result_json=NULL,error_text=NULL,"
+                "lease_owner=NULL,lease_expires_at=NULL,attempt_count=attempt_count+1 "
                 "WHERE id=? AND status='queued'",
                 (utc_now(), task_id),
             )
@@ -308,6 +328,76 @@ class TaskStore:
             if row is None:
                 raise KeyError("Task not found")
             return False
+
+    def claim_next_task(self, worker_id: str, lease_seconds: int = 300) -> dict[str, Any] | None:
+        """Atomically lease the oldest queued task to one durable queue worker."""
+        if not isinstance(worker_id, str) or not worker_id.strip() or len(worker_id) > 128:
+            raise ValueError("worker_id must be a non-empty string of at most 128 characters")
+        if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, int) or not 1 <= lease_seconds <= 3600:
+            raise ValueError("lease_seconds must be between 1 and 3600")
+        now = datetime.now(timezone.utc)
+        now_text = now.isoformat()
+        expires = (now.timestamp() + lease_seconds)
+        expires_text = datetime.fromtimestamp(expires, timezone.utc).isoformat()
+        with self.connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute(
+                "SELECT id FROM tasks WHERE status='queued' "
+                "ORDER BY created_at ASC, id ASC LIMIT 1"
+            ).fetchone()
+            if row is None:
+                return None
+            cursor = con.execute(
+                "UPDATE tasks SET status='running',updated_at=?,lease_owner=?,"
+                "lease_expires_at=?,attempt_count=attempt_count+1,result_json=NULL,error_text=NULL "
+                "WHERE id=? AND status='queued'",
+                (now_text, worker_id, expires_text, row["id"]),
+            )
+            if cursor.rowcount != 1:
+                return None
+            claimed = con.execute("SELECT * FROM tasks WHERE id=?", (row["id"],)).fetchone()
+            return dict(claimed) if claimed else None
+
+    def renew_task_lease(self, task_id: str, worker_id: str, lease_seconds: int = 300) -> bool:
+        if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, int) or not 1 <= lease_seconds <= 3600:
+            raise ValueError("lease_seconds must be between 1 and 3600")
+        expires_text = datetime.fromtimestamp(
+            datetime.now(timezone.utc).timestamp() + lease_seconds, timezone.utc
+        ).isoformat()
+        with self.connect() as con:
+            cursor = con.execute(
+                "UPDATE tasks SET lease_expires_at=?,updated_at=? "
+                "WHERE id=? AND status='running' AND lease_owner=? "
+                "AND lease_expires_at>?",
+                (expires_text, utc_now(), task_id, worker_id, utc_now()),
+            )
+            return cursor.rowcount == 1
+
+    def mark_expired_task_leases_unknown(self) -> int:
+        """Fence expired workers; uncertain running tasks are never automatically replayed."""
+        now = utc_now()
+        with self.connect() as con:
+            cursor = con.execute(
+                "UPDATE tasks SET status='unknown',updated_at=?,"
+                "error_text=COALESCE(error_text,'Task worker lease expired; inspect the task journal before recovery.'),"
+                "lease_owner=NULL,lease_expires_at=NULL "
+                "WHERE status='running' AND lease_expires_at IS NOT NULL AND lease_expires_at<=?",
+                (now, now),
+            )
+            return cursor.rowcount
+
+    def task_queue_metrics(self) -> dict[str, int]:
+        with self.connect() as con:
+            rows = con.execute(
+                "SELECT status,COUNT(*) AS count FROM tasks GROUP BY status"
+            ).fetchall()
+            attempts = con.execute(
+                "SELECT COALESCE(SUM(attempt_count),0) AS total FROM tasks"
+            ).fetchone()
+        counts = {status: 0 for status in STATUSES}
+        counts.update({row["status"]: int(row["count"]) for row in rows})
+        counts["total_attempts"] = int(attempts["total"]) if attempts else 0
+        return counts
 
     def set_task_status(self, task_id: str, status: str, result: Any = None, error: str | None = None) -> None:
         if status not in STATUSES:
@@ -320,13 +410,16 @@ class TaskStore:
             cursor = con.execute(
                 "UPDATE tasks SET status=?,updated_at=?,"
                 "result_json=CASE WHEN status=? THEN COALESCE(result_json,?) ELSE ? END,"
-                "error_text=CASE WHEN status=? THEN COALESCE(error_text,?) ELSE ? END "
+                "error_text=CASE WHEN status=? THEN COALESCE(error_text,?) ELSE ? END,"
+                "lease_owner=CASE WHEN ?='running' THEN lease_owner ELSE NULL END,"
+                "lease_expires_at=CASE WHEN ?='running' THEN lease_expires_at ELSE NULL END "
                 "WHERE id=? AND (status='queued' OR "
                 "(status='running' AND ? != 'queued') OR status=?)",
                 (
                     status, utc_now(),
                     status, encoded_result, encoded_result,
                     status, error, error,
+                    status, status,
                     task_id, status, status,
                 ),
             )
