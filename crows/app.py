@@ -322,6 +322,12 @@ class ModelConfigurationRequest(BaseModel):
 class TaskRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     input: str = Field(min_length=1, max_length=20_000)
+    priority: int = Field(default=0, ge=-10, le=10)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=256)
+
+
+class TaskRetryRequest(BaseModel):
+    max_attempts: int = Field(default=3, ge=1, le=10)
 
 class ScheduleReconciliationRequest(BaseModel):
     note: str = Field(min_length=1, max_length=2000)
@@ -2903,9 +2909,46 @@ def execute_tool(tool_name: str, request: ToolRequest):
         raise HTTPException(status_code=500, detail="Tool execution outcome may be uncertain") from exc
 
 
-@app.post("/tasks")
+@app.post("/tasks", status_code=201)
 def create_task(request: TaskRequest):
-    return store.create_task(request.title, request.input)
+    try:
+        return store.create_task(
+            request.title,
+            request.input,
+            priority=request.priority,
+            idempotency_key=request.idempotency_key,
+        )
+    except IdempotencyConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/tasks/{task_id}/retry")
+def retry_failed_task(task_id: str, request: TaskRetryRequest):
+    try:
+        retried = store.retry_failed_task(task_id, max_attempts=request.max_attempts)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Task not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if retried is None:
+        saved = store.get_task(task_id)
+        if saved and saved["status"] == "unknown":
+            raise HTTPException(
+                status_code=409,
+                detail="Task outcome is uncertain and cannot be retried automatically; reconcile it first.",
+            )
+        if saved and saved["status"] == "failed":
+            raise HTTPException(
+                status_code=409,
+                detail="Task retry limit reached.",
+            )
+        raise HTTPException(
+            status_code=409,
+            detail="Only failed tasks can be explicitly retried.",
+        )
+    return retried
 
 def _public_schedule(schedule: dict[str, Any]) -> dict[str, Any]:
     """Return schedule state without internal idempotency or worker lease data."""
