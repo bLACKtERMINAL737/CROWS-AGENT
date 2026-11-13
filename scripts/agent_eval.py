@@ -331,7 +331,17 @@ def main() -> int:
         "results": results,
         "privacy_note": "Prompts, answers, request headers, and credentials are excluded.",
     }
-    args.output.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    try:
+        args.output.write_text(
+            json.dumps(report, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        print(
+            f"Could not write evaluation report ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 2
     print(f"Agent evaluation: {passed}/{len(results)} passed; report: {args.output}")
     for item in results:
         status = "PASS" if item["passed"] else "FAIL"
