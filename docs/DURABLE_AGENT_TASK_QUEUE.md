@@ -28,4 +28,4 @@ The worker shares the existing server-process ownership lock. SQLite is the dura
 
 ## Queue health
 
-`GET /tasks/queue/metrics` returns aggregate task counts, attempts, queued counts by base priority, oldest queued timestamp and age in seconds, plus the highest effective priority under the 30-minute aging policy. It intentionally omits task IDs, worker IDs, and lease tokens.
+`GET /tasks/queue/metrics` returns aggregate task counts, attempts, queued counts by base priority, oldest queued timestamp and age in seconds, plus queue wait-age p50/p95, oldest running task age, expired running-lease count, leases expiring within 60 seconds, and the highest effective priority under the 30-minute aging policy. Percentiles use nearest-rank selection over currently queued tasks. It intentionally omits task IDs, worker IDs, and lease tokens.
