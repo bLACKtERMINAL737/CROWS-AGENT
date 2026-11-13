@@ -939,3 +939,61 @@ async def test_orchestrate_rejects_idempotency_key_reused_for_different_goal(
     assert error.value.status_code == 409
     assert len(router.planning_calls) == 1
     assert len(store.list_workflows()) == 1
+
+
+@pytest.mark.asyncio
+async def test_global_agent_concurrency_is_shared_across_workflows(tmp_path, monkeypatch):
+    store, router = configure(monkeypatch, tmp_path)
+    router.plan = {
+        "subtasks": [
+            {"title": f"Global slot check {index}", "input": "Run concurrently", "role": "research"}
+            for index in range(2)
+        ]
+    }
+    monkeypatch.setattr(
+        app_module,
+        "get_env",
+        lambda name, default=None: "2" if name == "CROWS_AGENT_GLOBAL_MAX_CONCURRENCY" else default,
+    )
+    active = 0
+    peak_active = 0
+    lock = asyncio.Lock()
+
+    async def fake_run(task_id):
+        nonlocal active, peak_active
+        task = store.get_task(task_id)
+        assert task is not None
+        assert store.claim_task(task_id)
+        async with lock:
+            active += 1
+            peak_active = max(peak_active, active)
+        await asyncio.sleep(0.02)
+        answer = (
+            '{"verdict":"PASS","summary":"Evidence is sufficient.","findings":[]}'
+            if task["title"].startswith("[qa_security]")
+            else task["title"]
+        )
+        store.set_task_status(task_id, "succeeded", result={"answer": answer})
+        async with lock:
+            active -= 1
+        return {
+            "task_id": task_id,
+            "status": "succeeded",
+            "result": answer,
+            "tool_calls": 0,
+            "tool_attempts": 0,
+        }
+
+    monkeypatch.setattr(app_module, "run_agent_task", fake_run)
+    first, second = await asyncio.gather(
+        app_module.orchestrate_agent_work(
+            app_module.AgentPlanRequest(goal="First concurrent workflow")
+        ),
+        app_module.orchestrate_agent_work(
+            app_module.AgentPlanRequest(goal="Second concurrent workflow")
+        ),
+    )
+
+    assert first["status"] == second["status"] == "succeeded"
+    assert first["global_max_concurrency"] == second["global_max_concurrency"] == 2
+    assert 1 < peak_active <= 2
