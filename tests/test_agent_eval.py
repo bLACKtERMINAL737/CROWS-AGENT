@@ -670,3 +670,67 @@ def test_run_case_rejects_non_string_answers_without_serializing_them(monkeypatc
     assert "invalid_answer_type" in result["checks_failed"]
     assert "answer" not in result
     assert "READY" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("status", [None, 1, {}, [], "completed"])
+def test_run_case_rejects_invalid_task_journal_status(monkeypatch, status):
+    responses = iter([
+        {"answer": "Done.", "task_id": "task-status-shape", "tool_calls": 0},
+        {"status": status, "tool_executions": []},
+    ])
+    monkeypatch.setattr(agent_eval, "_request_json", lambda *_a, **_kw: next(responses))
+
+    result = agent_eval.run_case(
+        {"name": "invalid journal status", "message": "Do a task"},
+        base_url="http://127.0.0.1:8000",
+        token="test-token",
+        timeout=1,
+    )
+
+    assert result["passed"] is False
+    assert "invalid_task_status" in result["checks_failed"]
+    assert result["task_status"] == "unknown"
+
+
+@pytest.mark.parametrize("executions", [None, {}, "not-a-list", 3])
+def test_run_case_rejects_invalid_tool_execution_collection(monkeypatch, executions):
+    responses = iter([
+        {"answer": "Done.", "task_id": "task-execution-shape", "tool_calls": 0},
+        {"status": "succeeded", "tool_executions": executions},
+    ])
+    monkeypatch.setattr(agent_eval, "_request_json", lambda *_a, **_kw: next(responses))
+
+    result = agent_eval.run_case(
+        {"name": "invalid execution collection", "message": "Do a task"},
+        base_url="http://127.0.0.1:8000",
+        token="test-token",
+        timeout=1,
+    )
+
+    assert result["passed"] is False
+    assert "invalid_tool_execution_list" in result["checks_failed"]
+
+
+def test_run_case_rejects_malformed_tool_execution_entries(monkeypatch):
+    responses = iter([
+        {"answer": "Done.", "task_id": "task-execution-entry", "tool_calls": 0},
+        {
+            "status": "succeeded",
+            "tool_executions": [
+                None,
+                {"tool_name": {"unexpected": "object"}, "status": "succeeded"},
+            ],
+        },
+    ])
+    monkeypatch.setattr(agent_eval, "_request_json", lambda *_a, **_kw: next(responses))
+
+    result = agent_eval.run_case(
+        {"name": "invalid execution entries", "message": "Do a task"},
+        base_url="http://127.0.0.1:8000",
+        token="test-token",
+        timeout=1,
+    )
+
+    assert result["passed"] is False
+    assert result["checks_failed"].count("invalid_tool_execution") == 2
+    assert result["tools_observed"] == []

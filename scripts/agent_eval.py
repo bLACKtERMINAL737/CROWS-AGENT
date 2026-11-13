@@ -216,37 +216,49 @@ def run_case(
                     token=token,
                     timeout=timeout,
                 )
-                task_status = str(task.get("status", "unknown"))
+                raw_status = task.get("status", "unknown")
+                if not isinstance(raw_status, str) or raw_status not in {
+                    "succeeded", "failed", "unknown", "not_created"
+                }:
+                    task_status = "unknown"
+                    checks.append("invalid_task_status")
+                else:
+                    task_status = raw_status
                 executions = task.get("tool_executions", [])
-                if isinstance(executions, list):
-                    for execution in executions:
-                        if not isinstance(execution, dict):
-                            continue
-                        name = str(execution.get("tool_name") or execution.get("name") or "")
-                        if name:
-                            tool_names.append(name)
-                        raw_arguments = execution.get("input_json", execution.get("arguments"))
-                        if isinstance(raw_arguments, str):
-                            try:
-                                raw_arguments = json.loads(raw_arguments)
-                            except json.JSONDecodeError:
-                                raw_arguments = None
-                        if name:
-                            observed_tool_calls.append({
-                                "name": name,
-                                "arguments": raw_arguments if isinstance(raw_arguments, dict) else None,
-                            })
-                            raw_result = execution.get("result_json", execution.get("result"))
-                            if isinstance(raw_result, str):
-                                try:
-                                    raw_result = json.loads(raw_result)
-                                except json.JSONDecodeError:
-                                    raw_result = None
-                            observed_tool_results.append({
-                                "name": name,
-                                "status": execution.get("status"),
-                                "result": raw_result,
-                            })
+                if not isinstance(executions, list):
+                    checks.append("invalid_tool_execution_list")
+                    executions = []
+                for execution in executions:
+                    if not isinstance(execution, dict):
+                        checks.append("invalid_tool_execution")
+                        continue
+                    raw_name = execution.get("tool_name") or execution.get("name")
+                    if not isinstance(raw_name, str) or not raw_name.strip():
+                        checks.append("invalid_tool_execution")
+                        continue
+                    name = raw_name
+                    tool_names.append(name)
+                    raw_arguments = execution.get("input_json", execution.get("arguments"))
+                    if isinstance(raw_arguments, str):
+                        try:
+                            raw_arguments = json.loads(raw_arguments)
+                        except json.JSONDecodeError:
+                            raw_arguments = None
+                    observed_tool_calls.append({
+                        "name": name,
+                        "arguments": raw_arguments if isinstance(raw_arguments, dict) else None,
+                    })
+                    raw_result = execution.get("result_json", execution.get("result"))
+                    if isinstance(raw_result, str):
+                        try:
+                            raw_result = json.loads(raw_result)
+                        except json.JSONDecodeError:
+                            raw_result = None
+                    observed_tool_results.append({
+                        "name": name,
+                        "status": execution.get("status"),
+                        "result": raw_result,
+                    })
                 expected_status = case.get("expected_task_status", "succeeded")
                 if task_status != expected_status:
                     checks.append("unexpected_task_status")
