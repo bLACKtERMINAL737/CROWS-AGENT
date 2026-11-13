@@ -373,6 +373,33 @@ class TaskStore:
             )
             return cursor.rowcount == 1
 
+    def owns_task_lease(self, task_id: str, worker_id: str) -> bool:
+        with self.connect() as con:
+            row = con.execute(
+                "SELECT 1 FROM tasks WHERE id=? AND status='running' "
+                "AND lease_owner=? AND lease_expires_at>?",
+                (task_id, worker_id, utc_now()),
+            ).fetchone()
+        return row is not None
+
+    def finish_task_lease(
+        self, task_id: str, worker_id: str, status: str,
+        result: Any = None, error: str | None = None,
+    ) -> bool:
+        """Finalize only while the caller still owns a live task lease."""
+        if status not in STATUSES - {"queued", "running"}:
+            raise ValueError("Lease owner can only finalize a task")
+        encoded_result = json.dumps(result, ensure_ascii=False) if result is not None else None
+        now = utc_now()
+        with self.connect() as con:
+            cursor = con.execute(
+                "UPDATE tasks SET status=?,updated_at=?,result_json=?,error_text=?,"
+                "lease_owner=NULL,lease_expires_at=NULL "
+                "WHERE id=? AND status='running' AND lease_owner=? AND lease_expires_at>?",
+                (status, now, encoded_result, error, task_id, worker_id, now),
+            )
+            return cursor.rowcount == 1
+
     def mark_expired_task_leases_unknown(self) -> int:
         """Fence expired workers; uncertain running tasks are never automatically replayed."""
         now = utc_now()
