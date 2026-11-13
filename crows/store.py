@@ -401,7 +401,7 @@ class TaskStore:
             con.execute("BEGIN IMMEDIATE")
             row = con.execute(
                 "SELECT id FROM tasks WHERE status='queued' "
-                "ORDER BY created_at ASC, id ASC LIMIT 1"
+                "ORDER BY priority DESC, created_at ASC, id ASC LIMIT 1"
             ).fetchone()
             if row is None:
                 return None
@@ -471,7 +471,7 @@ class TaskStore:
             )
             return cursor.rowcount
 
-    def task_queue_metrics(self) -> dict[str, int]:
+    def task_queue_metrics(self) -> dict[str, Any]:
         with self.connect() as con:
             rows = con.execute(
                 "SELECT status,COUNT(*) AS count FROM tasks GROUP BY status"
@@ -479,9 +479,21 @@ class TaskStore:
             attempts = con.execute(
                 "SELECT COALESCE(SUM(attempt_count),0) AS total FROM tasks"
             ).fetchone()
+            priorities = con.execute(
+                "SELECT priority,COUNT(*) AS count FROM tasks WHERE status='queued' "
+                "GROUP BY priority ORDER BY priority DESC"
+            ).fetchall()
+            oldest = con.execute(
+                "SELECT created_at FROM tasks WHERE status='queued' "
+                "ORDER BY created_at ASC LIMIT 1"
+            ).fetchone()
         counts = {status: 0 for status in STATUSES}
         counts.update({row["status"]: int(row["count"]) for row in rows})
         counts["total_attempts"] = int(attempts["total"]) if attempts else 0
+        counts["queued_by_priority"] = {
+            str(row["priority"]): int(row["count"]) for row in priorities
+        }
+        counts["oldest_queued_at"] = oldest["created_at"] if oldest else None
         return counts
 
     def set_task_status(self, task_id: str, status: str, result: Any = None, error: str | None = None) -> None:
