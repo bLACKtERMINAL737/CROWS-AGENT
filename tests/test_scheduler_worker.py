@@ -20,17 +20,18 @@ async def test_scheduler_worker_dispatches_due_registered_specialist_once(monkey
     monkeypatch.setattr(app_module, "store", tasks)
     monkeypatch.setattr(app_module, "list_agent_roles", lambda: [{"id": "research"}])
 
-    async def fake_run(task_id):
-        tasks.claim_task(task_id)
+    async def fake_run_with_lease_renewal(task_id, schedule_id, worker_id):
+        assert tasks.claim_task(task_id)
         tasks.set_task_status(task_id, "succeeded", result={"summary": "Reviewed"})
-        return {"status": "succeeded"}
 
     async def stop_after_one_iteration(delay):
         if delay == 60:
             await asyncio.Event().wait()
         raise asyncio.CancelledError()
 
-    monkeypatch.setattr(app_module, "run_agent_task", fake_run)
+    monkeypatch.setattr(
+        app_module, "run_agent_task_with_lease_renewal", fake_run_with_lease_renewal
+    )
     monkeypatch.setattr(app_module.asyncio, "sleep", stop_after_one_iteration)
 
     with pytest.raises(asyncio.CancelledError):
@@ -40,6 +41,40 @@ async def test_scheduler_worker_dispatches_due_registered_specialist_once(monkey
     assert saved["status"] == "completed"
     assert saved["task_id"]
     assert tasks.get_task(saved["task_id"])["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_worker_does_not_preclaim_work_it_cannot_start(monkeypatch, tmp_path):
+    scheduler = SchedulerStore(tmp_path / "scheduler-batch.sqlite3")
+    tasks = TaskStore(tmp_path / "tasks-batch.sqlite3")
+    due = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    first = scheduler.create_schedule(
+        "[research] First due task", "Run first", due, "batch-first"
+    )
+    second = scheduler.create_schedule(
+        "[research] Second due task", "Run second", due, "batch-second"
+    )
+    monkeypatch.setattr(app_module, "scheduler_store", scheduler)
+    monkeypatch.setattr(app_module, "store", tasks)
+    monkeypatch.setattr(app_module, "list_agent_roles", lambda: [{"id": "research"}])
+
+    async def fake_run_with_lease_renewal(task_id, schedule_id, worker_id):
+        assert tasks.claim_task(task_id)
+        tasks.set_task_status(task_id, "succeeded", result={"ok": True})
+
+    async def stop_after_one_iteration(_delay):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(
+        app_module, "run_agent_task_with_lease_renewal", fake_run_with_lease_renewal
+    )
+    monkeypatch.setattr(app_module.asyncio, "sleep", stop_after_one_iteration)
+
+    with pytest.raises(asyncio.CancelledError):
+        await app_module.scheduler_worker_loop()
+
+    assert scheduler.get_schedule(first["id"])["status"] == "completed"
+    assert scheduler.get_schedule(second["id"])["status"] == "scheduled"
 
 
 @pytest.mark.asyncio
