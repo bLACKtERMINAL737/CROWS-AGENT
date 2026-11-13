@@ -298,11 +298,11 @@ class TaskStore:
                     "PRAGMA index_info(idx_tasks_dispatch_queue)"
                 ).fetchall()
             ]
-            if dispatch_index != ["status", "priority", "created_at", "id"]:
+            if dispatch_index != ["status", "priority", "created_at"]:
                 con.execute("DROP INDEX IF EXISTS idx_tasks_dispatch_queue")
             con.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tasks_dispatch_queue "
-                "ON tasks(status, priority DESC, created_at, id)"
+                "ON tasks(status, priority DESC, created_at)"
             )
             con.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idempotency_key "
@@ -411,7 +411,7 @@ class TaskStore:
             con.execute("BEGIN IMMEDIATE")
             row = con.execute(
                 "SELECT id FROM tasks WHERE status='queued' "
-                "ORDER BY priority DESC, created_at ASC, id ASC LIMIT 1"
+                "ORDER BY priority DESC, created_at ASC, rowid ASC LIMIT 1"
             ).fetchone()
             if row is None:
                 return None
