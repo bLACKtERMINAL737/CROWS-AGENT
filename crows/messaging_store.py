@@ -64,6 +64,7 @@ class MessagingStore:
                     text TEXT NOT NULL,
                     status TEXT NOT NULL CHECK(status IN ('accepted','sent','delivered','failed','unknown')),
                     provider_message_id TEXT,
+                    failure_code TEXT,
                     idempotency_key TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -102,6 +103,9 @@ class MessagingStore:
                     created_at TEXT NOT NULL
                 );
             """)
+            message_columns = {row["name"] for row in con.execute("PRAGMA table_info(messaging_messages)")}
+            if "failure_code" not in message_columns:
+                con.execute("ALTER TABLE messaging_messages ADD COLUMN failure_code TEXT")
         raw_key = (get_env("CROWS_MESSAGING_TARGET_KEY", "") or "").strip()
         self._target_cipher = None
         if raw_key:
@@ -375,7 +379,7 @@ class MessagingStore:
 
     def finish_outbound_lease(
         self, message_id: str, *, worker_id: str, status: str,
-        provider_message_id: str | None = None,
+        provider_message_id: str | None = None, failure_code: str | None = None,
     ) -> bool:
         """Finish a lease only for its current owner; never auto-requeue uncertain outcomes."""
         if status not in {"sent", "delivered", "failed", "unknown"}:
@@ -388,6 +392,12 @@ class MessagingStore:
             ):
                 raise MessagingContractError("provider_message_id is invalid")
             provider_message_id = provider_message_id.strip()
+        if failure_code is not None and (
+            not isinstance(failure_code, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", failure_code)
+        ):
+            raise MessagingContractError("failure_code must be a safe lowercase diagnostic code")
+        if status in {"sent", "delivered"}:
+            failure_code = None
         now = _now()
         with self.connect() as con:
             con.execute("BEGIN IMMEDIATE")
@@ -405,10 +415,10 @@ class MessagingStore:
                 return False
             try:
                 con.execute(
-                    """UPDATE messaging_messages SET status=?,
+                    """UPDATE messaging_messages SET status=?, failure_code=?,
                        provider_message_id=COALESCE(?,provider_message_id), updated_at=?
                        WHERE id=? AND direction='outbound' AND status='accepted'""",
-                    (status, provider_message_id, now, message_id),
+                    (status, failure_code, provider_message_id, now, message_id),
                 )
             except sqlite3.IntegrityError as exc:
                 raise MessagingContractError(
@@ -431,7 +441,7 @@ class MessagingStore:
             ids = [row["message_id"] for row in rows]
             for message_id in ids:
                 con.execute(
-                    """UPDATE messaging_messages SET status='unknown', updated_at=?
+                    """UPDATE messaging_messages SET status='unknown', failure_code='worker_lease_expired', updated_at=?
                        WHERE id=? AND direction='outbound' AND status='accepted'""",
                     (now, message_id),
                 )
@@ -643,7 +653,7 @@ class MessagingStore:
             raise ValueError("limit must be an integer between 1 and 100")
         with self.connect() as con:
             rows = con.execute(
-                """SELECT m.id AS message_id, m.channel, m.status,
+                """SELECT m.id AS message_id, m.channel, m.status, m.failure_code,
                           m.created_at, m.updated_at,
                           COALESCE(r.retry_count, 0) AS retry_count,
                           COALESCE(r.max_retries, 0) AS max_retries,
@@ -673,10 +683,10 @@ class MessagingStore:
                    ORDER BY channel, status"""
             ).fetchall()
             recent_failures = con.execute(
-                """SELECT channel, status, COUNT(*) AS count, MAX(updated_at) AS latest_at
+                """SELECT channel, status, failure_code, COUNT(*) AS count, MAX(updated_at) AS latest_at
                    FROM messaging_messages
                    WHERE direction='outbound' AND status IN ('failed','unknown')
-                   GROUP BY channel, status
+                   GROUP BY channel, status, failure_code
                    ORDER BY latest_at DESC"""
             ).fetchall()
         by_status = {row["status"]: row["count"] for row in totals}
