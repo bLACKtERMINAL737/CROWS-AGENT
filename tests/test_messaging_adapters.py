@@ -165,7 +165,15 @@ async def test_discord_rate_limit_accepts_fractional_json_retry_after_and_caps_d
 
 @pytest.mark.asyncio
 async def test_rate_limit_uses_default_for_invalid_header_and_survives_invalid_json():
+    class MalformedResponse(FakeResponse):
+        def __init__(self):
+            super().__init__(429, None, {"Retry-After": "not-a-delay"})
+            self.content = b"{"
+
+        def json(self):
+            raise ValueError("invalid JSON")
+
     adapter = TelegramOutboundAdapter(lambda: ("bot-token", ""))
-    FakeClient.response = FakeResponse(429, None, {"Retry-After": "not-a-delay"})
+    FakeClient.response = MalformedResponse()
     receipt = await adapter.send(OutboundTransportMessage("telegram", "777", "hello", "key-10"))
     assert receipt.retry_after_seconds == 5
