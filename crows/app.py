@@ -1811,10 +1811,19 @@ def cancel_agent_workflow(workflow_id: str):
 
 
 @app.get("/agents/workflows/{workflow_id}/recovery-audit")
-def get_agent_workflow_recovery_audit(workflow_id: str, limit: int = 50, offset: int = 0):
-    """Return durable recovery attempt events without task inputs or results."""
+def get_agent_workflow_recovery_audit(
+    workflow_id: str,
+    limit: int = 50,
+    offset: int = 0,
+    attempt_id: str | None = None,
+    event_type: str | None = None,
+):
+    """Return durable recovery events with optional attempt and lifecycle filters."""
     try:
-        return store.list_workflow_recovery_audit(workflow_id, limit=limit, offset=offset)
+        return store.list_workflow_recovery_audit(
+            workflow_id, limit=limit, offset=offset,
+            attempt_id=attempt_id, event_type=event_type,
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Workflow not found") from exc
     except ValueError as exc:

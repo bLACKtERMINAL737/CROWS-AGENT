@@ -683,8 +683,9 @@ class TaskStore:
         attempt_id: str | None = None,
         details: dict[str, Any] | None = None,
     ) -> str:
-        """Append a bounded, content-minimizing durable recovery audit event."""
-        if event_type not in {"started", "completed", "interrupted"}:
+        """Append a bounded event while enforcing a single terminal event per attempt."""
+        allowed_events = {"started", "completed", "interrupted"}
+        if event_type not in allowed_events:
             raise ValueError("Invalid workflow recovery audit event type")
         if details is not None and not isinstance(details, dict):
             raise ValueError("Recovery audit details must be an object")
@@ -692,13 +693,33 @@ class TaskStore:
         if len(encoded) > 4000:
             raise ValueError("Recovery audit details exceed 4000 characters")
         attempt_id = attempt_id or str(uuid4())
+        if not isinstance(attempt_id, str) or not attempt_id.strip() or len(attempt_id) > 128:
+            raise ValueError("Invalid workflow recovery attempt ID")
         event_id = str(uuid4())
         with self.connect() as con:
+            # Acquire the SQLite write reservation before checking the attempt
+            # sequence so concurrent writers cannot append duplicate terminal events.
+            con.execute("BEGIN IMMEDIATE")
             exists = con.execute(
                 "SELECT 1 FROM agent_workflows WHERE id=?", (workflow_id,)
             ).fetchone()
             if exists is None:
                 raise KeyError("Workflow not found")
+            prior = con.execute(
+                "SELECT event_type,workflow_id FROM workflow_recovery_audit "
+                "WHERE attempt_id=? ORDER BY created_at,id",
+                (attempt_id,),
+            ).fetchall()
+            if any(row["workflow_id"] != workflow_id for row in prior):
+                raise ValueError("Recovery attempt ID is already associated with another workflow")
+            prior_types = [row["event_type"] for row in prior]
+            if event_type == "started":
+                if prior_types:
+                    raise ValueError("Recovery attempt already has an event")
+            elif not prior_types or prior_types[0] != "started":
+                raise ValueError("Recovery attempt must start before terminal events")
+            elif len(prior_types) != 1 or prior_types[0] != "started":
+                raise ValueError("Recovery attempt already has a terminal event")
             con.execute(
                 "INSERT INTO workflow_recovery_audit "
                 "(id,attempt_id,workflow_id,event_type,details_json,created_at) "
@@ -708,11 +729,30 @@ class TaskStore:
         return attempt_id
 
     def list_workflow_recovery_audit(
-        self, workflow_id: str, *, limit: int = 50, offset: int = 0
+        self,
+        workflow_id: str,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        attempt_id: str | None = None,
+        event_type: str | None = None,
     ) -> dict[str, Any]:
         """Return stable, bounded recovery audit pages without task payloads."""
         if not 1 <= limit <= 200 or not 0 <= offset <= 1_000_000:
             raise ValueError("limit or offset is outside its allowed range")
+        if attempt_id is not None and (not attempt_id.strip() or len(attempt_id) > 128):
+            raise ValueError("Invalid workflow recovery attempt ID")
+        if event_type is not None and event_type not in {"started", "completed", "interrupted"}:
+            raise ValueError("Invalid workflow recovery audit event type")
+        clauses = ["workflow_id=?"]
+        params: list[Any] = [workflow_id]
+        if attempt_id is not None:
+            clauses.append("attempt_id=?")
+            params.append(attempt_id)
+        if event_type is not None:
+            clauses.append("event_type=?")
+            params.append(event_type)
+        where = " AND ".join(clauses)
         with self.connect() as con:
             exists = con.execute(
                 "SELECT 1 FROM agent_workflows WHERE id=?", (workflow_id,)
@@ -720,14 +760,14 @@ class TaskStore:
             if exists is None:
                 raise KeyError("Workflow not found")
             total = con.execute(
-                "SELECT COUNT(*) AS count FROM workflow_recovery_audit WHERE workflow_id=?",
-                (workflow_id,),
+                f"SELECT COUNT(*) AS count FROM workflow_recovery_audit WHERE {where}",
+                params,
             ).fetchone()["count"]
             rows = con.execute(
                 "SELECT id,attempt_id,workflow_id,event_type,details_json,created_at "
-                "FROM workflow_recovery_audit WHERE workflow_id=? "
+                f"FROM workflow_recovery_audit WHERE {where} "
                 "ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?",
-                (workflow_id, limit, offset),
+                [*params, limit, offset],
             ).fetchall()
         events = []
         for row in rows:

@@ -1069,3 +1069,45 @@ def test_recovery_does_not_start_tasks_when_start_audit_cannot_persist(tmp_path,
     assert error.value.status_code == 503
     assert store.get_workflow(workflow_id)["status"] == "unknown"
     assert store.get_task(task_id)["status"] == "queued"
+
+
+def test_recovery_audit_enforces_attempt_lifecycle_and_single_terminal_event(tmp_path, monkeypatch):
+    store, workflow_id, _task_id, _qa_id = make_workflow(tmp_path, monkeypatch)
+    attempt_id = store.record_workflow_recovery_event(workflow_id, "started")
+    with pytest.raises(ValueError, match="already has an event"):
+        store.record_workflow_recovery_event(workflow_id, "started", attempt_id=attempt_id)
+    with pytest.raises(ValueError, match="must start before terminal events"):
+        store.record_workflow_recovery_event(workflow_id, "completed", attempt_id="missing-start")
+    store.record_workflow_recovery_event(workflow_id, "interrupted", attempt_id=attempt_id)
+    with pytest.raises(ValueError, match="already has a terminal event"):
+        store.record_workflow_recovery_event(workflow_id, "completed", attempt_id=attempt_id)
+
+
+def test_recovery_audit_prevents_attempt_id_reuse_across_workflows(tmp_path, monkeypatch):
+    store, workflow_id, _task_id, _qa_id = make_workflow(tmp_path, monkeypatch)
+    other = store.create_workflow("Other workflow", [])
+    attempt_id = store.record_workflow_recovery_event(workflow_id, "started")
+    with pytest.raises(ValueError, match="another workflow"):
+        store.record_workflow_recovery_event(other["id"], "completed", attempt_id=attempt_id)
+
+
+def test_recovery_audit_filters_by_attempt_and_event_type(tmp_path, monkeypatch):
+    store, workflow_id, _task_id, _qa_id = make_workflow(tmp_path, monkeypatch)
+    first = store.record_workflow_recovery_event(workflow_id, "started")
+    store.record_workflow_recovery_event(workflow_id, "completed", attempt_id=first)
+    second = store.record_workflow_recovery_event(workflow_id, "started")
+    store.record_workflow_recovery_event(workflow_id, "interrupted", attempt_id=second)
+    started = store.list_workflow_recovery_audit(workflow_id, event_type="started")
+    assert started["pagination"]["total"] == 2
+    assert all(event["event_type"] == "started" for event in started["events"])
+    filtered = store.list_workflow_recovery_audit(workflow_id, attempt_id=second)
+    assert [event["event_type"] for event in reversed(filtered["events"])] == ["started", "interrupted"]
+    assert all(event["attempt_id"] == second for event in filtered["events"])
+
+
+def test_recovery_audit_rejects_invalid_attempt_filter_and_event_type(tmp_path, monkeypatch):
+    store, workflow_id, _task_id, _qa_id = make_workflow(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="Invalid workflow recovery attempt ID"):
+        store.list_workflow_recovery_audit(workflow_id, attempt_id="")
+    with pytest.raises(ValueError, match="Invalid workflow recovery audit event type"):
+        store.list_workflow_recovery_audit(workflow_id, event_type="deleted")
