@@ -96,14 +96,18 @@ When API-token protection is enabled, include the configured bearer token locall
 
 The competition demo is limited to 3 minutes. Record a concise, reproducible take that prioritizes one verified end-to-end agent task. Do not attempt to squeeze every feature into the submission video.
 
-### Suggested 180-second structure
+### Primary 180-second structure: full agent workflow
 
-1. **0:00–0:20 — Problem and positioning.** Introduce Crows as a local-first, modular AI agent foundation for task execution with explicit review and safe local development. Avoid claiming production readiness or that all inference is local when a cloud provider is selected.
-2. **0:20–0:40 — Live status.** Show the local UI and healthy API; briefly show the configured route without exposing provider IDs that are sensitive, tokens, or keys.
-3. **0:40–1:05 — Real tool execution.** Ask a short task requiring a workspace tool. Show the task journal's actual tool name, arguments, result, and status. Only include this if the exact release candidate passes the tool-use acceptance gates above.
-4. **1:05–2:25 — Approval-first coding.** Use a harmless sample project, create a proposal, inspect the diff, and show that files remain unchanged until explicit approval. Apply only after reviewing the diff. If this flow is not verified, do not stage it as a successful demo.
-5. **2:25–2:50 — Verification and safety.** Show a real test result if the sandbox is available; briefly mention token protection and that coding changes require approval. Skip Docker claims if the sandbox was not actually run.
-6. **2:50–3:00 — Close.** State the core value in one sentence and finish before the 3-minute cap.
+The primary story is the running agent, not a feature catalogue. Use the prepared,
+non-sensitive workspace and one bounded goal from plan preview through QA.
+
+1. **0:00–0:15 — Positioning and live status.** Introduce Crows as a local-first agent runtime with inspectable work and explicit control. Show /health and configured route status without exposing credentials.
+2. **0:15–0:40 — User goal and plan review.** Enter the sample-workspace review goal in Agent Workflows. Generate the preview, show specialist roles/dependencies, and point out that no workflow or task exists yet. Review and explicitly execute this exact plan.
+3. **0:40–1:25 — Actual agent execution.** Show the live workflow, specialist task records, and real workspace tool calls. Open the task journal and verify the tool name, arguments, returned file content, and successful status. Never substitute a mock result for this live segment.
+4. **1:25–2:05 — Durable state and QA.** Show the persisted workflow detail, ordered timeline, QA checkpoint, and evaluation outcome. Restart/recovery is a separate validation; do not fake a restart during the short recording.
+5. **2:05–2:35 — Failure honesty and recovery safety.** Briefly show the deterministic failure-path test output or a previously recorded, genuine failure run. Explain that a failed prerequisite blocks dependent work and uncertain work is not blindly replayed. Label test fixtures as tests, not live outages.
+6. **2:35–2:55 — Security and scope.** Show localhost binding, token protection, and the explicit review boundary. Mention coding proposals as a secondary capability only if separately verified.
+7. **2:55–3:00 — Close.** State the value in one sentence and finish before the 3-minute cap.
 
 **Recording rule:** use only features that passed on the exact release candidate. If live provider latency is unreliable, record a real successful run in advance; do not replace it with a mock or imply that an unexecuted action succeeded. Keep API tokens and provider credentials off-screen.
 
@@ -157,7 +161,7 @@ Do not mark the submission complete until each required portal field is filled a
 
 ## Workflow-first demo path (development target for the December review)
 
-The original short demo outline above focuses on the chat and approval-gated coding flow. For the next demo-development stage, prioritize the durable agent workflow because it demonstrates Crows' differentiating capabilities: inspectable plans, specialist execution, persistent checkpoints, conservative failure handling, recovery audit, and deterministic QA. Keep the coding-proposal segment as a secondary capability, not a second full storyline.
+The workflow-first storyline above is the primary demo path. It demonstrates Crows' differentiating capabilities: inspectable plans, specialist execution, actual tool use, persistent checkpoints, conservative failure handling, recovery audit, and deterministic QA. Keep the coding-proposal segment as a separately validated secondary capability, not a competing main storyline.
 
 ### Three-minute workflow storyline
 
