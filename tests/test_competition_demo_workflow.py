@@ -296,7 +296,7 @@ async def test_reviewed_workflow_executes_real_workspace_tools_and_journals_ever
 
     timeline = app_module.get_agent_workflow_timeline(result["workflow_id"])
     assert sum(
-        event["event"] == "tool.execution" and event["status"] == "succeeded"
+        event["event"] == "tool.status" and event["status"] == "succeeded"
         for event in timeline["timeline"]
     ) == 3
     evaluation = app_module.evaluate_agent_workflow(result["workflow_id"])
