@@ -1031,7 +1031,7 @@ def test_recovery_endpoint_writes_durable_start_and_completion_events(tmp_path, 
         assert task is not None and task["status"] == "queued"
         assert store.claim_task(task_id_arg)
         result = (
-            "{\\"verdict\\":\\"PASS\\",\\"summary\\":\\"Evidence is sufficient.\\",\\"findings\\":[]}"
+            '{"verdict":"PASS","summary":"Evidence is sufficient.","findings":[]}'
             if task["title"].startswith("[qa_security]") else "verified"
         )
         store.set_task_status(task_id_arg, "succeeded", result={"answer": result})
@@ -1054,3 +1054,18 @@ def test_workflow_recovery_audit_api_validates_and_returns_404(tmp_path, monkeyp
     with pytest.raises(HTTPException) as missing:
         app_module.get_agent_workflow_recovery_audit("missing")
     assert missing.value.status_code == 404
+
+
+def test_recovery_does_not_start_tasks_when_start_audit_cannot_persist(tmp_path, monkeypatch):
+    store, workflow_id, task_id, _qa_id = make_workflow(tmp_path, monkeypatch)
+    async def should_not_run(_task_id):
+        pytest.fail("recovery task must not run without a durable start audit")
+    def fail_audit(*args, **kwargs):
+        raise OSError("audit database unavailable")
+    monkeypatch.setattr(app_module, "run_agent_task", should_not_run)
+    monkeypatch.setattr(store, "record_workflow_recovery_event", fail_audit)
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(app_module.recover_agent_workflow(workflow_id))
+    assert error.value.status_code == 503
+    assert store.get_workflow(workflow_id)["status"] == "unknown"
+    assert store.get_task(task_id)["status"] == "queued"
