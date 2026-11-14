@@ -1102,7 +1102,7 @@ def test_recovery_audit_filters_by_attempt_and_event_type(tmp_path, monkeypatch)
     assert all(event["event_type"] == "started" for event in started["events"])
     filtered = store.list_workflow_recovery_audit(workflow_id, attempt_id=second)
     assert [event["event_type"] for event in reversed(filtered["events"])] == ["started", "interrupted"]
-    assert filtered["pagination"]["attempt_id"] == second
+    assert all(event["attempt_id"] == second for event in filtered["events"])
 
 
 def test_recovery_audit_rejects_invalid_attempt_filter_and_event_type(tmp_path, monkeypatch):
