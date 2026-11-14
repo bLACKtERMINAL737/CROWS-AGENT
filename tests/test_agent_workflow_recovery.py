@@ -1076,7 +1076,7 @@ def test_recovery_audit_enforces_attempt_lifecycle_and_single_terminal_event(tmp
     attempt_id = store.record_workflow_recovery_event(workflow_id, "started")
     with pytest.raises(ValueError, match="already has an event"):
         store.record_workflow_recovery_event(workflow_id, "started", attempt_id=attempt_id)
-    with pytest.raises(ValueError, match="already has a terminal event"):
+    with pytest.raises(ValueError, match="must start before terminal events"):
         store.record_workflow_recovery_event(workflow_id, "completed", attempt_id="missing-start")
     store.record_workflow_recovery_event(workflow_id, "interrupted", attempt_id=attempt_id)
     with pytest.raises(ValueError, match="already has a terminal event"):
