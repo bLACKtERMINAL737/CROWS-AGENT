@@ -1810,6 +1810,139 @@ def cancel_agent_workflow(workflow_id: str):
     return {"workflow_id": workflow_id, "status": "running", "control_state": "cancel_requested"}
 
 
+@app.get("/agents/workflows/{workflow_id}/recovery-plan")
+def get_agent_workflow_recovery_plan(workflow_id: str):
+    """Preview recovery eligibility without claiming or executing any workflow tasks."""
+    workflow = store.get_workflow(workflow_id)
+    if workflow is None:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+    issues: list[str] = []
+    if workflow.get("status") != "unknown":
+        issues.append("workflow_not_interrupted")
+    checkpoint = workflow.get("results")
+    if not isinstance(checkpoint, dict):
+        checkpoint = {}
+        issues.append("checkpoint_missing_or_invalid")
+    outcomes = checkpoint.get("tasks")
+    plan = workflow.get("plan")
+    if not isinstance(outcomes, list) or any(not isinstance(item, dict) for item in outcomes):
+        outcomes = []
+        issues.append("task_checkpoints_invalid")
+    if not isinstance(plan, list) or any(not isinstance(item, dict) for item in plan) or len(plan) != len(outcomes):
+        plan = []
+        issues.append("plan_checkpoint_mismatch")
+
+    compatible = {
+        "queued": {"queued"}, "running": {"running", "unknown"},
+        "succeeded": {"succeeded"}, "failed": {"failed"},
+        "unknown": {"unknown", "running"}, "blocked": {"queued"},
+    }
+    task_rows = []
+    seen_ids: set[str] = set()
+    statuses: list[str] = []
+    for index, outcome in enumerate(outcomes):
+        task_id = outcome.get("task_id")
+        checkpoint_status = outcome.get("status")
+        task = store.get_task(task_id) if isinstance(task_id, str) else None
+        journal_status = task.get("status") if task else None
+        reasons = []
+        if not isinstance(task_id, str) or not task_id.strip() or task_id in seen_ids:
+            reasons.append("missing_or_duplicate_task_id")
+        elif task is None:
+            reasons.append("task_journal_missing")
+        else:
+            seen_ids.add(task_id)
+        if checkpoint_status not in compatible:
+            reasons.append("invalid_checkpoint_status")
+        elif journal_status not in compatible[checkpoint_status]:
+            reasons.append("checkpoint_journal_mismatch")
+        if index < len(plan):
+            expected_title = f"[{plan[index].get('role', 'planner')}] {plan[index].get('title', '')}"
+            if task is not None and task.get("title") != expected_title:
+                reasons.append("task_identity_mismatch")
+            if outcome.get("title") != plan[index].get("title"):
+                reasons.append("plan_title_mismatch")
+        else:
+            reasons.append("plan_item_missing")
+        if reasons:
+            issues.extend(reasons)
+        statuses.append(checkpoint_status if isinstance(checkpoint_status, str) else "invalid")
+        if checkpoint_status == "queued" and not reasons:
+            disposition = "eligible_to_resume"
+        elif checkpoint_status in {"running", "unknown"} and not reasons:
+            disposition = "uncertain_never_replay"
+        elif checkpoint_status in {"succeeded", "failed", "blocked"} and not reasons:
+            disposition = "preserve_checkpoint"
+        else:
+            disposition = "manual_inspection_required"
+        task_rows.append({
+            "plan_index": index, "task_id": task_id if isinstance(task_id, str) else None,
+            "checkpoint_status": checkpoint_status if isinstance(checkpoint_status, str) else "invalid",
+            "journal_status": journal_status, "disposition": disposition, "issues": reasons,
+        })
+
+    qa = checkpoint.get("qa_review")
+    qa_preview = None
+    if qa is not None:
+        if not isinstance(qa, dict):
+            issues.append("qa_checkpoint_invalid")
+            qa_preview = {"disposition": "manual_inspection_required", "issues": ["qa_checkpoint_invalid"]}
+        else:
+            qa_status = qa.get("status")
+            qa_id = qa.get("task_id")
+            qa_task = store.get_task(qa_id) if isinstance(qa_id, str) else None
+            qa_issues = []
+            if qa_status == "not_started":
+                if qa_id is not None:
+                    qa_issues.append("not_started_qa_has_task_id")
+                qa_disposition = "not_started_no_automatic_creation"
+            elif qa_status not in compatible:
+                qa_issues.append("invalid_qa_status")
+                qa_disposition = "manual_inspection_required"
+            elif qa_task is None or qa_task.get("title") != "[qa_security] Review specialist results":
+                qa_issues.append("qa_task_missing_or_mismatched")
+                qa_disposition = "manual_inspection_required"
+            elif qa_task.get("status") not in compatible[qa_status]:
+                qa_issues.append("qa_checkpoint_journal_mismatch")
+                qa_disposition = "manual_inspection_required"
+            elif qa_status == "queued":
+                qa_disposition = "eligible_to_resume"
+            elif qa_status in {"running", "unknown"}:
+                qa_disposition = "uncertain_never_replay"
+            else:
+                qa_disposition = "preserve_checkpoint"
+            if qa_issues:
+                issues.extend(qa_issues)
+            qa_preview = {
+                "task_id": qa_id if isinstance(qa_id, str) else None,
+                "checkpoint_status": qa_status if isinstance(qa_status, str) else "invalid",
+                "journal_status": qa_task.get("status") if qa_task else None,
+                "disposition": qa_disposition, "issues": qa_issues,
+            }
+
+    try:
+        recovery_order = dependency_order(outcomes) if outcomes else []
+    except (TypeError, ValueError):
+        recovery_order = []
+        issues.append("dependency_graph_invalid")
+    counts: dict[str, int] = {}
+    for row in task_rows:
+        counts[row["disposition"]] = counts.get(row["disposition"], 0) + 1
+    return {
+        "workflow_id": workflow_id,
+        "workflow_status": workflow.get("status"),
+        "recoverable": not issues and workflow.get("status") == "unknown",
+        "issues": sorted(set(issues)),
+        "recovery_order": recovery_order,
+        "task_counts_by_disposition": counts,
+        "tasks": task_rows,
+        "qa_review": qa_preview,
+        "execution_started": False,
+        "state_mutated": False,
+    }
+
+
 @app.post("/agents/workflows/{workflow_id}/recover")
 async def recover_agent_workflow(workflow_id: str):
     """Explicitly continue only checkpointed queued tasks; never replay uncertain work."""
