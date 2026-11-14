@@ -81,13 +81,23 @@ Existing Telegram/Discord integrations may be shown only if they are stable and 
 - [ ] Logs, screenshots, and recordings contain no API keys, tokens, private messages, or personal data.
 - [ ] Known limitations are stated plainly; no unsupported production-readiness claims.
 
+## Existing assets to reuse (already present on main)
+
+- `docs/COMPETITION_DEMO_RUNBOOK.md` contains the local startup, review-first planning, UI, safety, and three-minute recording guidance.
+- `examples/competition_demo/` contains the non-sensitive sample workspace fixture.
+- `tests/test_agent_workflows.py` already covers persisted plans/checkpoints, specialist failure, dependency blocking, and concurrency limits.
+- `tests/test_workflow_evaluation_api.py` already covers a successful deterministic evaluation response and content minimization.
+- `tests/test_agent_workflow_recovery.py` already covers recovery preview and durable recovery-audit behavior.
+
+These are starting assets, not proof that the complete demo has passed on the current release candidate. Extend them only where an integration gap is found; avoid duplicating existing fixtures, runbooks, or tests.
+
 ## Immediate next engineering batch
 
-1. Inspect the current main-branch workflow APIs, UI panels, test fixtures, and evaluation endpoints.
-2. Choose one existing scenario that exercises plan review, task checkpoints, failure handling, QA, and evaluation without introducing new infrastructure.
-3. Add deterministic fixture/stub support and an end-to-end regression test.
-4. Add a one-command or clearly documented demo reset/run path.
-5. Only then polish the visible demo flow.
+1. Run the current `main` CI and full local test suite; resolve existing blockers before layering demo changes.
+2. Rehearse the existing `examples/competition_demo/` fixture and `docs/COMPETITION_DEMO_RUNBOOK.md` from a clean local database.
+3. Identify the missing end-to-end link between review-first planning, deterministic task failure, workflow timeline, recovery audit, and evaluation.
+4. Add only the missing integration regression coverage and a repeatable reset/run command if the existing fixture instructions are insufficient.
+5. Polish the visible demo flow only after the above is reproducible.
 
 ## Status
 
