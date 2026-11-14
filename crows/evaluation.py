@@ -232,6 +232,22 @@ def build_workflow_timeline(
                 plan_index = index
             add_task_events(outcome, phase="specialist", plan_index=plan_index)
 
+            # Dependency-blocked tasks are intentionally never inserted into the
+            # task journal because they were never executed. Their durable
+            # workflow checkpoint is still an observable state transition, so
+            # represent it in the timeline rather than silently omitting it.
+            task_id = outcome.get("task_id")
+            task_exists = isinstance(task_id, str) and task_id in records
+            if outcome.get("status") == "blocked" and not task_exists:
+                add(
+                    workflow.get("updated_at") or workflow.get("created_at"),
+                    "task.status",
+                    "blocked",
+                    phase="specialist",
+                    plan_index=plan_index,
+                    role=outcome.get("role") if isinstance(outcome.get("role"), str) else None,
+                )
+
     qa_review = results.get("qa_review")
     if isinstance(qa_review, dict):
         add_task_events(qa_review, phase="qa")
