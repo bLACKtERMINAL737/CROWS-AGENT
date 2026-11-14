@@ -162,6 +162,18 @@ class TaskStore:
               state TEXT NOT NULL CHECK(state IN ('running','paused','cancel_requested','completed')),
               updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS workflow_recovery_audit (
+              id TEXT PRIMARY KEY,
+              attempt_id TEXT NOT NULL,
+              workflow_id TEXT NOT NULL REFERENCES agent_workflows(id) ON DELETE CASCADE,
+              event_type TEXT NOT NULL CHECK(event_type IN ('started','completed','interrupted')),
+              details_json TEXT NOT NULL DEFAULT '{}',
+              created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_workflow_recovery_audit_workflow_created
+              ON workflow_recovery_audit(workflow_id, created_at DESC, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_workflow_recovery_audit_attempt
+              ON workflow_recovery_audit(attempt_id, created_at, id);
             CREATE TABLE IF NOT EXISTS workflow_idempotency (
               idempotency_key TEXT PRIMARY KEY,
               request_hash TEXT NOT NULL,
@@ -662,6 +674,77 @@ class TaskStore:
         if workflow is None:
             raise RuntimeError("Idempotent workflow record disappeared")
         return workflow, created
+
+    def record_workflow_recovery_event(
+        self,
+        workflow_id: str,
+        event_type: str,
+        *,
+        attempt_id: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> str:
+        """Append a bounded, content-minimizing durable recovery audit event."""
+        if event_type not in {"started", "completed", "interrupted"}:
+            raise ValueError("Invalid workflow recovery audit event type")
+        if details is not None and not isinstance(details, dict):
+            raise ValueError("Recovery audit details must be an object")
+        encoded = json.dumps(details or {}, ensure_ascii=False)
+        if len(encoded) > 4000:
+            raise ValueError("Recovery audit details exceed 4000 characters")
+        attempt_id = attempt_id or str(uuid4())
+        event_id = str(uuid4())
+        with self.connect() as con:
+            exists = con.execute(
+                "SELECT 1 FROM agent_workflows WHERE id=?", (workflow_id,)
+            ).fetchone()
+            if exists is None:
+                raise KeyError("Workflow not found")
+            con.execute(
+                "INSERT INTO workflow_recovery_audit "
+                "(id,attempt_id,workflow_id,event_type,details_json,created_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (event_id, attempt_id, workflow_id, event_type, encoded, utc_now()),
+            )
+        return attempt_id
+
+    def list_workflow_recovery_audit(
+        self, workflow_id: str, *, limit: int = 50, offset: int = 0
+    ) -> dict[str, Any]:
+        """Return stable, bounded recovery audit pages without task payloads."""
+        if not 1 <= limit <= 200 or not 0 <= offset <= 1_000_000:
+            raise ValueError("limit or offset is outside its allowed range")
+        with self.connect() as con:
+            exists = con.execute(
+                "SELECT 1 FROM agent_workflows WHERE id=?", (workflow_id,)
+            ).fetchone()
+            if exists is None:
+                raise KeyError("Workflow not found")
+            total = con.execute(
+                "SELECT COUNT(*) AS count FROM workflow_recovery_audit WHERE workflow_id=?",
+                (workflow_id,),
+            ).fetchone()["count"]
+            rows = con.execute(
+                "SELECT id,attempt_id,workflow_id,event_type,details_json,created_at "
+                "FROM workflow_recovery_audit WHERE workflow_id=? "
+                "ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?",
+                (workflow_id, limit, offset),
+            ).fetchall()
+        events = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["details"] = json.loads(item.pop("details_json"))
+            except (TypeError, ValueError):
+                item["details"] = {}
+                item.pop("details_json", None)
+            events.append(item)
+        return {
+            "events": events,
+            "pagination": {
+                "limit": limit, "offset": offset, "total": total,
+                "returned": len(events), "has_more": offset + len(events) < total,
+            },
+        }
 
     def get_workflow(self, workflow_id: str) -> dict[str, Any] | None:
         with self.connect() as con:
