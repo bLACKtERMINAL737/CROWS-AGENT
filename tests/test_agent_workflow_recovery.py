@@ -990,3 +990,82 @@ def test_recovery_plan_preview_returns_404_for_missing_workflow(tmp_path, monkey
     with pytest.raises(HTTPException) as error:
         app_module.get_agent_workflow_recovery_plan("missing")
     assert error.value.status_code == 404
+
+
+def test_workflow_recovery_audit_is_durable_and_paginated(tmp_path, monkeypatch):
+    store, workflow_id, _task_id, _qa_id = make_workflow(tmp_path, monkeypatch)
+    attempt_id = store.record_workflow_recovery_event(
+        workflow_id, "started", details={"queued_task_count": 1}
+    )
+    store.record_workflow_recovery_event(
+        workflow_id, "completed", attempt_id=attempt_id,
+        details={"workflow_status": "succeeded", "succeeded_task_count": 1},
+    )
+    first = store.list_workflow_recovery_audit(workflow_id, limit=1, offset=0)
+    second = store.list_workflow_recovery_audit(workflow_id, limit=1, offset=1)
+    assert first["pagination"] == {
+        "limit": 1, "offset": 0, "total": 2, "returned": 1, "has_more": True
+    }
+    assert first["events"][0]["event_type"] == "completed"
+    assert second["events"][0]["event_type"] == "started"
+    assert first["events"][0]["attempt_id"] == second["events"][0]["attempt_id"] == attempt_id
+    assert first["events"][0]["details"]["workflow_status"] == "succeeded"
+    with pytest.raises(ValueError):
+        store.list_workflow_recovery_audit(workflow_id, limit=0)
+
+
+def test_workflow_recovery_audit_rejects_invalid_events_and_oversized_details(tmp_path, monkeypatch):
+    store, workflow_id, _task_id, _qa_id = make_workflow(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="Invalid workflow recovery audit event"):
+        store.record_workflow_recovery_event(workflow_id, "secret_payload")
+    with pytest.raises(ValueError, match="exceed 4000"):
+        store.record_workflow_recovery_event(workflow_id, "started", details={"note": "x" * 5000})
+    with pytest.raises(KeyError):
+        store.record_workflow_recovery_event("missing", "started")
+
+
+def test_recovery_endpoint_writes_durable_start_and_completion_events(tmp_path, monkeypatch):
+    store, workflow_id, task_id, qa_id = make_workflow(tmp_path, monkeypatch)
+    async def fake_run(task_id_arg):
+        task = store.get_task(task_id_arg)
+        assert task is not None and task["status"] == "queued"
+        assert store.claim_task(task_id_arg)
+        result = (
+            '{"verdict":"PASS","summary":"Evidence is sufficient.","findings":[]}'
+            if task["title"].startswith("[qa_security]") else "verified"
+        )
+        store.set_task_status(task_id_arg, "succeeded", result={"answer": result})
+        return {"task_id": task_id_arg, "status": "succeeded", "result": result, "tool_calls": 0, "tool_attempts": 0}
+    monkeypatch.setattr(app_module, "run_agent_task", fake_run)
+    result = asyncio.run(app_module.recover_agent_workflow(workflow_id))
+    assert result["status"] == "succeeded"
+    audit = store.list_workflow_recovery_audit(workflow_id)
+    assert [event["event_type"] for event in reversed(audit["events"])] == ["started", "completed"]
+    assert audit["events"][0]["attempt_id"] == audit["events"][1]["attempt_id"]
+    assert audit["events"][0]["details"]["workflow_status"] == "succeeded"
+
+
+def test_workflow_recovery_audit_api_validates_and_returns_404(tmp_path, monkeypatch):
+    store, workflow_id, _task_id, _qa_id = make_workflow(tmp_path, monkeypatch)
+    assert app_module.get_agent_workflow_recovery_audit(workflow_id)["pagination"]["total"] == 0
+    with pytest.raises(HTTPException) as invalid:
+        app_module.get_agent_workflow_recovery_audit(workflow_id, limit=0)
+    assert invalid.value.status_code == 400
+    with pytest.raises(HTTPException) as missing:
+        app_module.get_agent_workflow_recovery_audit("missing")
+    assert missing.value.status_code == 404
+
+
+def test_recovery_does_not_start_tasks_when_start_audit_cannot_persist(tmp_path, monkeypatch):
+    store, workflow_id, task_id, _qa_id = make_workflow(tmp_path, monkeypatch)
+    async def should_not_run(_task_id):
+        pytest.fail("recovery task must not run without a durable start audit")
+    def fail_audit(*args, **kwargs):
+        raise OSError("audit database unavailable")
+    monkeypatch.setattr(app_module, "run_agent_task", should_not_run)
+    monkeypatch.setattr(store, "record_workflow_recovery_event", fail_audit)
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(app_module.recover_agent_workflow(workflow_id))
+    assert error.value.status_code == 503
+    assert store.get_workflow(workflow_id)["status"] == "unknown"
+    assert store.get_task(task_id)["status"] == "queued"
