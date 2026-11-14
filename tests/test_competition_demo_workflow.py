@@ -4,6 +4,7 @@ import pytest
 
 from crows import app as app_module
 from crows.store import TaskStore
+from crows.tools import ToolRegistry
 
 
 class DemoPlanningRouter:
@@ -200,3 +201,104 @@ async def test_review_first_demo_happy_path_completes_qa_timeline_and_evaluation
     assert report["checks"]["workflow_succeeded"] is True
     assert report["checks"]["all_tasks_succeeded"] is True
     assert report["checks"]["qa_passed"] is True
+
+class ToolExecutingWorkflowRouter(DemoPlanningRouter):
+    def __init__(self):
+        super().__init__()
+        self.tool_results = []
+        self.specialist_routes = []
+
+    async def chat_with_tools(self, message, task_type, **kwargs):
+        self.specialist_routes.append(task_type)
+        assert any(
+            spec["function"]["name"] == "workspace__read_file"
+            for spec in kwargs["tool_specs"]
+        )
+        result = await kwargs["execute_tool"](
+            "workspace__read_file", {"path": "known_facts.txt"}
+        )
+        self.tool_results.append(result["content"])
+        assert "Crows demo marker: ORBIT-731." in result["content"]
+        if "qa_security" in message:
+            return {
+                "answer": json.dumps({
+                    "verdict": "PASS",
+                    "summary": "The source evidence was read and all specialist outputs are consistent.",
+                    "findings": [],
+                }),
+                "tool_calls": 1,
+            }
+        return {
+            "answer": f"Verified source evidence: {result['content']}",
+            "tool_calls": 1,
+        }
+
+
+@pytest.mark.asyncio
+async def test_reviewed_workflow_executes_real_workspace_tools_and_journals_every_specialist(
+    tmp_path, monkeypatch
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "known_facts.txt").write_text(
+        "Crows demo marker: ORBIT-731.\\n"
+        "The sample workspace owner is the fictional Northstar Lab.\\n",
+        encoding="utf-8",
+    )
+    store = TaskStore(tmp_path / "real-tool-workflow.sqlite3")
+    router = ToolExecutingWorkflowRouter()
+    registry = ToolRegistry(workspace)
+
+    monkeypatch.setattr(app_module, "store", store)
+    monkeypatch.setattr(app_module, "router", router)
+    monkeypatch.setattr(app_module, "tools", registry)
+    monkeypatch.setattr(app_module, "reasoning_provider", ConfiguredRoute())
+
+    goal = "Read the sample workspace and produce a verified evidence review"
+    preview = await app_module.preview_agent_plan(app_module.AgentPlanRequest(goal=goal))
+
+    assert preview["executed"] is False
+    assert store.list_workflows() == []
+    assert store.list_tasks() == []
+    assert router.planning_calls == 1
+
+    result = await app_module.orchestrate_agent_work(
+        app_module.AgentPlanRequest(goal=goal, subtasks=preview["subtasks"])
+    )
+
+    assert result["status"] == "succeeded"
+    assert router.planning_calls == 1
+    assert len(router.tool_results) == 3  # research, coding, and independent QA
+    assert router.specialist_routes.count("reasoning") >= 2
+    assert "coding" in router.specialist_routes
+
+    workflow = store.get_workflow(result["workflow_id"])
+    assert workflow is not None
+    assert workflow["status"] == "succeeded"
+    assert workflow["results"]["qa_review"]["verdict"] == "PASS"
+
+    task_results = workflow["results"]["tasks"]
+    assert len(task_results) == 2
+    for outcome in task_results:
+        assert outcome["status"] == "succeeded"
+        assert "Crows demo marker: ORBIT-731." in outcome["result"]
+        executions = store.list_tool_executions(outcome["task_id"])
+        assert len(executions) == 1
+        assert executions[0]["tool_name"] == "workspace.read_file"
+        assert executions[0]["status"] == "succeeded"
+        assert "ORBIT-731" in executions[0]["result_json"]
+
+    qa_task_id = workflow["results"]["qa_review"]["task_id"]
+    qa_executions = store.list_tool_executions(qa_task_id)
+    assert len(qa_executions) == 1
+    assert qa_executions[0]["tool_name"] == "workspace.read_file"
+    assert qa_executions[0]["status"] == "succeeded"
+
+    timeline = app_module.get_agent_workflow_timeline(result["workflow_id"])
+    assert sum(
+        event["event"] == "tool.execution" and event["status"] == "succeeded"
+        for event in timeline["timeline"]
+    ) == 3
+    evaluation = app_module.evaluate_agent_workflow(result["workflow_id"])
+    assert evaluation["evaluation"]["outcome"] == "passed"
+    assert evaluation["evaluation"]["checks"]["qa_passed"] is True
