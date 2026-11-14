@@ -2109,12 +2109,26 @@ async def recover_agent_workflow(workflow_id: str):
         raise HTTPException(status_code=404, detail="Workflow not found") from exc
     if not claimed:
         raise HTTPException(status_code=409, detail="Another request already claimed this workflow for recovery.")
-    recovery_attempt_id = store.record_workflow_recovery_event(
-        workflow_id, "started", details={
-            "queued_task_count": sum(1 for item in outcomes if item.get("status") == "queued"),
-            "uncertain_task_count": sum(1 for item in outcomes if item.get("status") in {"running", "unknown"}),
-        },
-    )
+    try:
+        recovery_attempt_id = store.record_workflow_recovery_event(
+            workflow_id, "started", details={
+                "queued_task_count": sum(1 for item in outcomes if item.get("status") == "queued"),
+                "uncertain_task_count": sum(1 for item in outcomes if item.get("status") in {"running", "unknown"}),
+            },
+        )
+    except Exception as exc:
+        # Do not leave a claimed workflow stuck in running if audit persistence fails.
+        try:
+            store.update_workflow(
+                workflow_id, "unknown", results=checkpoint,
+                error="Recovery was not started because its audit event could not be persisted.",
+            )
+        except Exception:
+            logger.exception("Could not release workflow after recovery audit failure")
+        raise HTTPException(
+            status_code=503,
+            detail="Recovery audit storage is unavailable; no recovery tasks were started.",
+        ) from exc
 
     try:
         recovery_timeout_seconds = agent_task_timeout_seconds()
@@ -2234,16 +2248,21 @@ async def recover_agent_workflow(workflow_id: str):
             results=checkpoint,
             error=None if all_ok else "Recovery finished without replaying uncertain work; inspect remaining failed or unknown checkpoints.",
         )
-        store.record_workflow_recovery_event(
-            workflow_id, "completed", attempt_id=recovery_attempt_id,
-            details={
-                "workflow_status": final_status,
-                "succeeded_task_count": sum(1 for item in outcomes if item.get("status") == "succeeded"),
-                "failed_task_count": sum(1 for item in outcomes if item.get("status") == "failed"),
-                "unknown_task_count": sum(1 for item in outcomes if item.get("status") == "unknown"),
-                "qa_status": final_qa.get("status") if isinstance(final_qa, dict) else None,
-            },
-        )
+        try:
+            store.record_workflow_recovery_event(
+                workflow_id, "completed", attempt_id=recovery_attempt_id,
+                details={
+                    "workflow_status": final_status,
+                    "succeeded_task_count": sum(1 for item in outcomes if item.get("status") == "succeeded"),
+                    "failed_task_count": sum(1 for item in outcomes if item.get("status") == "failed"),
+                    "unknown_task_count": sum(1 for item in outcomes if item.get("status") == "unknown"),
+                    "qa_status": final_qa.get("status") if isinstance(final_qa, dict) else None,
+                },
+            )
+        except Exception:
+            # The workflow result is already committed; a secondary audit outage must
+            # not report a successful recovery as failed or rewrite its terminal state.
+            logger.exception("Could not persist completed workflow recovery audit event")
         return {
             "workflow_id": workflow_id,
             "status": final_status,
