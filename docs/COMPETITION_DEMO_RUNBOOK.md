@@ -154,3 +154,40 @@ Do not mark the submission complete until each required portal field is filled a
 - [ ] Token and provider keys are not visible in screen recording.
 - [ ] Every proposed diff is reviewed before approval.
 - [ ] Any skipped or failed segment is described honestly.
+
+## Workflow-first demo path (development target for the December review)
+
+The original short demo outline above focuses on the chat and approval-gated coding flow. For the next demo-development stage, prioritize the durable agent workflow because it demonstrates Crows' differentiating capabilities: inspectable plans, specialist execution, persistent checkpoints, conservative failure handling, recovery audit, and deterministic QA. Keep the coding-proposal segment as a secondary capability, not a second full storyline.
+
+### Three-minute workflow storyline
+
+1. **0:00–0:20 — User goal.** Enter one bounded research goal in the Agent Workflows panel. Use a harmless project/repository review scenario; do not ask the demo to modify files or send external messages.
+2. **0:20–0:45 — Plan before execution.** Generate the plan preview. Show task roles and dependencies. Explain that preview creates no workflow/task records. Review the exact plan and explicitly execute it.
+3. **0:45–1:25 — Durable execution.** Show the workflow state, specialist task checkpoints, bounded concurrency, and persisted task journal. Open the timeline and show real task/tool status events.
+4. **1:25–2:05 — Failure honesty.** Show the deterministic regression scenario using the existing dependency-failure test:
+   `python -m pytest tests/test_agent_workflows.py -q -k dependencies_first_and_blocks_dependents_on_failure`
+   Explain that the failing prerequisite blocks dependent work; independent work may still finish. Do not stage a fake live outage or describe a test fixture as a live provider failure.
+5. **2:05–2:35 — Recovery and audit.** Show the read-only recovery preview and the durable recovery-audit records for an eligible interrupted workflow. Explain that uncertain work is not blindly replayed. Use the recovery test suite as evidence if a live interrupted run is not safe or repeatable:
+   `python -m pytest tests/test_agent_workflow_recovery.py -q`
+6. **2:35–2:55 — QA and evaluation.** Open the workflow evaluation endpoint/UI and show the deterministic outcome. A failed/partial scenario must not be presented as a passed workflow.
+7. **2:55–3:00 — Honest close.** State the local-first, approval-aware, recoverable-workflow value and disclose that this remains an evolving MVP.
+
+### Endpoint sequence for the review-first path
+
+- `POST /agents/plan` — create a validated preview; no task execution.
+- `POST /agents/orchestrate` — submit the original goal and the exact reviewed `subtasks` array.
+- `GET /agents/workflows/{workflow_id}` — inspect saved plan, checkpoints, QA result, and status.
+- `GET /agents/workflows/{workflow_id}/timeline` — inspect sanitized ordered events.
+- `GET /agents/workflows/{workflow_id}/evaluation` — inspect deterministic workflow evaluation.
+- `GET /agents/workflows/{workflow_id}/recovery-audit` — inspect persisted recovery audit history (only when recovery has occurred).
+
+Use the UI wherever possible during recording. These endpoints are listed to make the sequence reproducible and to support API-level verification.
+
+### Demo truth rules
+
+- Do not claim a preview was executed; show the explicit execution step.
+- Do not claim a partial workflow passed QA.
+- Do not call a recovery preview a recovery execution.
+- Do not replay a task whose outcome is unknown.
+- A pytest fixture proves the tested behavior in that fixture; it does not prove a live provider failure occurred.
+- Capture the exact commit SHA and test output for the release candidate.
