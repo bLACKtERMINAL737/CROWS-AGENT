@@ -783,7 +783,6 @@ class TaskStore:
             "pagination": {
                 "limit": limit, "offset": offset, "total": total,
                 "returned": len(events), "has_more": offset + len(events) < total,
-                "attempt_id": attempt_id, "event_type": event_type,
             },
         }
 
