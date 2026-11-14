@@ -241,8 +241,7 @@ async def test_reviewed_workflow_executes_real_workspace_tools_and_journals_ever
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "known_facts.txt").write_text(
-        "Crows demo marker: ORBIT-731.\\n"
-        "The sample workspace owner is the fictional Northstar Lab.\\n",
+        "Crows demo marker: ORBIT-731.",
         encoding="utf-8",
     )
     store = TaskStore(tmp_path / "real-tool-workflow.sqlite3")
