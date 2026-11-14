@@ -136,3 +136,55 @@ def test_evaluation_rejects_checkpoint_plan_index_and_dependency_mismatch():
 
     assert report["checks"]["dependency_graph_valid"] is False
     assert report["checks"]["all_tasks_succeeded"] is False
+
+def test_timeline_includes_blocked_checkpoint_without_a_task_journal_record():
+    from crows.evaluation import build_workflow_timeline
+
+    workflow_record = {
+        "status": "partial",
+        "created_at": "2026-11-15T10:00:00+00:00",
+        "updated_at": "2026-11-15T10:00:02+00:00",
+        "results": {
+            "tasks": [
+                {
+                    "plan_index": 0,
+                    "task_id": "failed-task",
+                    "title": "Source task",
+                    "role": "research",
+                    "status": "failed",
+                },
+                {
+                    "plan_index": 1,
+                    "title": "Dependent task",
+                    "role": "coding",
+                    "status": "blocked",
+                    "blocked_by": [0],
+                },
+            ]
+        },
+    }
+    task_records = [
+        {
+            "id": "failed-task",
+            "created_at": "2026-11-15T10:00:00+00:00",
+            "updated_at": "2026-11-15T10:00:01+00:00",
+            "status": "failed",
+        }
+    ]
+
+    events = build_workflow_timeline(workflow_record, task_records)
+
+    blocked = [
+        event for event in events
+        if event["event"] == "task.status" and event["status"] == "blocked"
+    ]
+    assert blocked == [
+        {
+            "at": "2026-11-15T10:00:02+00:00",
+            "event": "task.status",
+            "status": "blocked",
+            "phase": "specialist",
+            "plan_index": 1,
+            "role": "coding",
+        }
+    ]
