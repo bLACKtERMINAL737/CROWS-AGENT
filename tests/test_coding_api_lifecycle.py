@@ -19,7 +19,7 @@ class ProposalRouter:
                 "summary": "Update the sample value",
                 "changes": [{
                     "path": "sample.py",
-                    "content": "def value():\\n    return 2\\n",
+                    "content": "def value():\n    return 2\n",
                 }],
             }),
             "route": "coding",
@@ -36,7 +36,7 @@ async def test_coding_proposal_review_approval_and_apply_api_lifecycle(
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     source = workspace / "sample.py"
-    original = "def value():\\n    return 1\\n"
+    original = "def value():\n    return 1\n"
     source.write_text(original, encoding="utf-8")
 
     store = TaskStore(tmp_path / "coding-api-lifecycle.sqlite3")
@@ -89,7 +89,7 @@ async def test_coding_proposal_review_approval_and_apply_api_lifecycle(
         assert applied.status_code == 200
         assert applied.json()["status"] == "applied"
         assert source.read_text(encoding="utf-8") == (
-            "def value():\\n    return 2\\n"
+            "def value():\n    return 2\n"
         )
 
         duplicate_apply = await client.post(
@@ -97,7 +97,7 @@ async def test_coding_proposal_review_approval_and_apply_api_lifecycle(
         )
         assert duplicate_apply.status_code == 409
         assert source.read_text(encoding="utf-8") == (
-            "def value():\\n    return 2\\n"
+            "def value():\n    return 2\n"
         )
 
     saved = store.get_proposal(proposal_id)
