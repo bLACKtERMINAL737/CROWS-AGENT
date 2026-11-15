@@ -1949,6 +1949,9 @@ def get_agent_workflow_recovery_plan(workflow_id: str):
     counts: dict[str, int] = {}
     for row in task_rows:
         counts[row["disposition"]] = counts.get(row["disposition"], 0) + 1
+    if qa_preview is not None:
+        qa_disposition = qa_preview["disposition"]
+        counts[qa_disposition] = counts.get(qa_disposition, 0) + 1
     return {
         "workflow_id": workflow_id,
         "workflow_status": workflow.get("status"),
