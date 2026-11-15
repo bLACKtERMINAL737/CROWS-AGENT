@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from crows import app as app_module
 from crows.store import TaskStore
 from crows.tools import ToolError
+from crows.provider import ModelProvider, ModelRouter
 
 
 class ReadOnlyTools:
@@ -151,3 +152,93 @@ async def test_provider_failure_after_tool_keeps_tool_record_and_fails_task(
     # rewrite the actual tool result to failed or unknown.
     assert executions[0]["status"] == "succeeded"
     assert "MAXIMU-AGENT-TOOL-OK" in executions[0]["result_json"]
+
+
+@pytest.mark.asyncio
+async def test_real_provider_transport_runs_specialist_tool_and_persists_journal(
+    tmp_path, monkeypatch
+):
+    store = TaskStore(tmp_path / "provider-agent-journal.sqlite3")
+    task = store.create_task(
+        "[research] Verify workspace evidence",
+        "Read notes.txt and report the verified content.",
+    )
+    tools = ReadOnlyTools()
+    responses = [
+        {
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": "call-workspace-read",
+                        "type": "function",
+                        "function": {
+                            "name": "workspace__read_file",
+                            "arguments": json.dumps({"path": "notes.txt"}),
+                        },
+                    }],
+                }
+            }]
+        },
+        {
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "Verified workspace evidence: MAXIMU-AGENT-TOOL-OK",
+                    "tool_calls": [],
+                }
+            }]
+        },
+    ]
+    requests = []
+    transport = httpx.MockTransport(
+        lambda request: (
+            requests.append(request)
+            or httpx.Response(200, json=responses.pop(0), request=request)
+        )
+    )
+    real_async_client = httpx.AsyncClient
+
+    def client_factory(*args, **kwargs):
+        return real_async_client(*args, transport=transport, **kwargs)
+
+    monkeypatch.setattr("crows.provider.httpx.AsyncClient", client_factory)
+    provider = ModelProvider(
+        "https://provider.example/v1", "integration-test-key", "crows-test-model"
+    )
+    monkeypatch.setattr(app_module, "store", store)
+    monkeypatch.setattr(app_module, "tools", tools)
+    monkeypatch.setattr(app_module, "router", ModelRouter(provider))
+
+    result = await app_module.run_agent_task(task["id"])
+
+    assert result["status"] == "succeeded"
+    assert result["tool_calls"] == 1
+    assert result["tool_attempts"] == 1
+    assert result["workspace_modified"] is False
+    assert "MAXIMU-AGENT-TOOL-OK" in result["result"]
+    assert tools.executions == [("workspace.read_file", {"path": "notes.txt"})]
+    assert store.get_task(task["id"])["status"] == "succeeded"
+
+    journal = store.list_tool_executions(task["id"])
+    assert len(journal) == 1
+    assert journal[0]["tool_name"] == "workspace.read_file"
+    assert journal[0]["status"] == "succeeded"
+    assert "Verified workspace evidence" in journal[0]["result_json"]
+
+    assert len(requests) == 2
+    first_payload = json.loads(requests[0].content)
+    assert first_payload["model"] == "crows-test-model"
+    assert first_payload["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "workspace__read_file"},
+    }
+    second_payload = json.loads(requests[1].content)
+    tool_result = next(
+        item for item in second_payload["messages"] if item.get("role") == "tool"
+    )
+    assert tool_result["tool_call_id"] == "call-workspace-read"
+    assert json.loads(tool_result["content"])["content"] == (
+        "Verified workspace evidence: MAXIMU-AGENT-TOOL-OK"
+    )
