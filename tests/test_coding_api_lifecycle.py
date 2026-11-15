@@ -44,12 +44,13 @@ async def test_coding_proposal_review_approval_and_apply_api_lifecycle(
     coding = CodingEngine(workspace, store, model_router)
     monkeypatch.setattr(app_module, "store", store)
     monkeypatch.setattr(app_module, "coding", coding)
-    monkeypatch.setenv("AETHER_API_TOKEN", "coding-lifecycle-test-token")
+    monkeypatch.setenv("CROWS_API_TOKEN", "coding-lifecycle-test-token")
+    monkeypatch.setattr(app_module.app, "middleware_stack", None)
 
     async with AsyncClient(
         transport=ASGITransport(app=app_module.app),
         base_url="http://127.0.0.1:8000",
-        headers={"X-Aether-Token": "coding-lifecycle-test-token"},
+        headers={"X-Crows-Token": "coding-lifecycle-test-token"},
     ) as client:
         created = await client.post(
             "/coding/proposals",
