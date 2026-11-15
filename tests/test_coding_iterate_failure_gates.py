@@ -17,7 +17,7 @@ class IterationFailureRouter:
                 "summary": "Candidate change",
                 "changes": [{
                     "path": "sample.py",
-                    "content": "def value():\\n    return 2\\n",
+                    "content": "def value():\n    return 2\n",
                 }],
             }),
             "route": "coding",
@@ -43,7 +43,7 @@ async def test_iterative_coding_blocks_before_model_call_when_baseline_fails(
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     source = workspace / "sample.py"
-    original = "def value():\\n    return 1\\n"
+    original = "def value():\n    return 1\n"
     source.write_text(original, encoding="utf-8")
     store = TaskStore(tmp_path / "baseline-failure.sqlite3")
     router = IterationFailureRouter()
@@ -77,7 +77,7 @@ async def test_iterative_coding_discards_candidate_when_candidate_tests_fail(
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     source = workspace / "sample.py"
-    original = "def value():\\n    return 1\\n"
+    original = "def value():\n    return 1\n"
     source.write_text(original, encoding="utf-8")
     store = TaskStore(tmp_path / "candidate-failure.sqlite3")
     router = IterationFailureRouter()
