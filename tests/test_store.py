@@ -1092,6 +1092,8 @@ def test_queue_metrics_report_wait_percentiles_and_lease_health(tmp_path: Path):
     store = TaskStore(tmp_path / "task-queue-health.sqlite3")
     running = store.create_task("running", "in progress")
     assert store.claim_next_task("health-worker", lease_seconds=120)["id"] == running["id"]
+    expired = store.create_task("expired", "lease has elapsed")
+    assert store.claim_next_task("expired-worker", lease_seconds=120)["id"] == expired["id"]
     queued = [store.create_task(f"queued-{index}", "waiting") for index in range(20)]
     now = datetime.now(timezone.utc)
     with store.connect() as con:
@@ -1108,6 +1110,14 @@ def test_queue_metrics_report_wait_percentiles_and_lease_health(tmp_path: Path):
                 running["id"],
             ),
         )
+        con.execute(
+            "UPDATE tasks SET created_at=?,lease_expires_at=? WHERE id=?",
+            (
+                (now - timedelta(minutes=10)).isoformat(),
+                (now - timedelta(seconds=30)).isoformat(),
+                expired["id"],
+            ),
+        )
 
     metrics = store.task_queue_metrics()
     assert metrics["queued_age_p50_seconds"] >= 590
@@ -1115,8 +1125,8 @@ def test_queue_metrics_report_wait_percentiles_and_lease_health(tmp_path: Path):
     assert metrics["queued_age_p95_seconds"] >= 1_140
     assert metrics["oldest_queued_age_seconds"] >= 1_190
     assert metrics["oldest_running_created_at"] is not None
-    assert metrics["oldest_running_age_seconds"] >= 290
-    assert metrics["running_with_expired_lease_count"] == 0
+    assert metrics["oldest_running_age_seconds"] >= 590
+    assert metrics["running_with_expired_lease_count"] == 1
     assert metrics["leases_expiring_within_60_seconds"] == 1
     assert "worker_id" not in metrics
     assert "lease_owner" not in metrics
