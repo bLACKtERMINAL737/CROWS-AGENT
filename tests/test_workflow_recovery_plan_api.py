@@ -49,9 +49,7 @@ async def test_recovery_plan_api_is_read_only_and_marks_uncertain_tasks(
         workflow["id"], "unknown", results=checkpoint,
         error="simulated process interruption",
     )
-    monkeypatch.setattr(app_module, "store", store)
-    monkeypatch.setenv("CROWS_API_TOKEN", API_TOKEN)
-
+    # The checkpoint says the specialist was running when interrupted; keep the durable\n    # task journal aligned so this tests uncertain-work classification, not a mismatch.\n    store.set_task_status(specialist["id"], "unknown")\n    monkeypatch.setattr(app_module, "store", store)\n    monkeypatch.setenv("CROWS_API_TOKEN", API_TOKEN)\n
     async def should_not_execute(_task_id):
         pytest.fail("Recovery-plan preview must never execute a task")
 
