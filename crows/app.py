@@ -1920,6 +1920,9 @@ def get_agent_workflow_recovery_plan(workflow_id: str):
             elif qa_status not in compatible:
                 qa_issues.append("invalid_qa_status")
                 qa_disposition = "manual_inspection_required"
+            elif isinstance(qa_id, str) and qa_id in seen_ids:
+                qa_issues.append("qa_task_id_duplicates_specialist")
+                qa_disposition = "manual_inspection_required"
             elif qa_task is None or qa_task.get("title") != "[qa_security] Review specialist results":
                 qa_issues.append("qa_task_missing_or_mismatched")
                 qa_disposition = "manual_inspection_required"
