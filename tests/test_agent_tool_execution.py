@@ -238,10 +238,9 @@ async def test_real_provider_transport_runs_specialist_tool_and_persists_journal
     assert len(requests) == 2
     first_payload = json.loads(requests[0].content)
     assert first_payload["model"] == "crows-test-model"
-    assert first_payload["tool_choice"] == {
-        "type": "function",
-        "function": {"name": "workspace__read_file"},
-    }
+    # Specialist prompts expose the read-only tool set without forcing a
+    # specific function; the model selects the tool from the available schema.
+    assert first_payload["tool_choice"] == "auto"
     second_payload = json.loads(requests[1].content)
     tool_result = next(
         item for item in second_payload["messages"] if item.get("role") == "tool"
