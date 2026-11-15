@@ -520,9 +520,9 @@ class TaskStore:
                 "SELECT created_at FROM tasks WHERE status='queued' "
                 "ORDER BY created_at ASC, rowid ASC LIMIT 1"
             ).fetchone()
-            queued_times = con.execute(
-                "SELECT created_at FROM tasks WHERE status='queued' ORDER BY created_at ASC"
-            ).fetchall()
+            queued_count_row = con.execute(
+                "SELECT COUNT(*) AS count FROM tasks WHERE status='queued'"
+            ).fetchone()
             oldest_running = con.execute(
                 "SELECT created_at FROM tasks WHERE status='running' "
                 "ORDER BY created_at ASC, rowid ASC LIMIT 1"
@@ -555,20 +555,28 @@ class TaskStore:
             str(row["priority"]): int(row["count"]) for row in priorities
         }
         counts["oldest_queued_at"] = oldest["created_at"] if oldest else None
-        queued_ages = sorted(
-            max(0, int((now - datetime.fromisoformat(row["created_at"])).total_seconds()))
-            for row in queued_times
+        queued_count = int(queued_count_row["count"]) if queued_count_row else 0
+        counts["oldest_queued_age_seconds"] = (
+            max(0, int((now - datetime.fromisoformat(oldest["created_at"])).total_seconds()))
+            if oldest else 0
         )
-        counts["oldest_queued_age_seconds"] = queued_ages[-1] if queued_ages else 0
-        # Nearest-rank percentiles: rank = ceil(p * n), converted to zero-based index.
-        counts["queued_age_p50_seconds"] = (
-            queued_ages[max(0, (50 * len(queued_ages) + 99) // 100 - 1)]
-            if queued_ages else 0
-        )
-        counts["queued_age_p95_seconds"] = (
-            queued_ages[max(0, (95 * len(queued_ages) + 99) // 100 - 1)]
-            if queued_ages else 0
-        )
+
+        def queued_age_percentile(percent: int) -> int:
+            if queued_count == 0:
+                return 0
+            # Nearest-rank percentile: rank = ceil(percent * n / 100).
+            offset = (percent * queued_count + 99) // 100 - 1
+            row = con.execute(
+                "SELECT created_at FROM tasks WHERE status='queued' "
+                "ORDER BY created_at DESC LIMIT 1 OFFSET ?",
+                (offset,),
+            ).fetchone()
+            if row is None:
+                return 0
+            return max(0, int((now - datetime.fromisoformat(row["created_at"])).total_seconds()))
+
+        counts["queued_age_p50_seconds"] = queued_age_percentile(50)
+        counts["queued_age_p95_seconds"] = queued_age_percentile(95)
         counts["oldest_running_created_at"] = (
             oldest_running["created_at"] if oldest_running else None
         )
