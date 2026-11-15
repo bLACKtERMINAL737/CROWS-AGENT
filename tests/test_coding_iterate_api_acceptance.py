@@ -24,7 +24,7 @@ class IterationRouter:
                 "summary": "Return the corrected value",
                 "changes": [{
                     "path": "sample.py",
-                    "content": "def value():\\n    return 7\\n",
+                    "content": "def value():\n    return 7\n",
                 }],
             }),
             "route": "coding",
@@ -41,7 +41,7 @@ async def test_iterative_coding_api_returns_reviewable_proposal_after_test_pass(
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     source = workspace / "sample.py"
-    original = "def value():\\n    return 1\\n"
+    original = "def value():\n    return 1\n"
     source.write_text(original, encoding="utf-8")
 
     store = TaskStore(tmp_path / "coding-iterate.sqlite3")
@@ -56,11 +56,11 @@ async def test_iterative_coding_api_returns_reviewable_proposal_after_test_pass(
         return {
             "passed": True,
             "returncode": 0,
-            "stdout": "2 passed in 0.08s",
+            "stdout": "===== 235 passed in 0.08s =====",
             "stderr": "",
         }
 
-    monkeypatch.setattr(coding, "run_tests", deterministic_test_run)
+    monkeypatch.setattr(CodingEngine, "run_tests", lambda self: deterministic_test_run())
     monkeypatch.setattr(app_module, "store", store)
     monkeypatch.setattr(app_module, "coding", coding)
     monkeypatch.setenv("CROWS_API_TOKEN", API_TOKEN)
@@ -87,8 +87,10 @@ async def test_iterative_coding_api_returns_reviewable_proposal_after_test_pass(
     outcome = response.json()
     assert outcome["passed"] is True
     assert outcome["proposal"]["status"] == "pending"
-    assert outcome["rounds"][0]["test_result"]["passed"] is True
-    assert len(test_runs) == 1
+    assert outcome["rounds"][0]["gate_status"] == "ready_for_review"
+    assert outcome["rounds"][0]["baseline_test_count"] == 235
+    assert outcome["rounds"][0]["candidate_test_count"] == 235
+    assert len(test_runs) == 2  # baseline and candidate evidence
     assert model_router.prompts
     assert model_router.prompts[0].find("Make value() return 7") >= 0
 
