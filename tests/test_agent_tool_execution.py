@@ -164,6 +164,14 @@ async def test_real_provider_transport_runs_specialist_tool_and_persists_journal
         "Read notes.txt and report the verified content.",
     )
     tools = ReadOnlyTools()
+    executed_tools = []
+    original_execute = tools.execute
+
+    def tracked_execute(name, arguments):
+        executed_tools.append((name, arguments))
+        return original_execute(name, arguments)
+
+    tools.execute = tracked_execute
     responses = [
         {
             "choices": [{
@@ -218,7 +226,7 @@ async def test_real_provider_transport_runs_specialist_tool_and_persists_journal
     assert result["tool_attempts"] == 1
     assert result["workspace_modified"] is False
     assert "MAXIMU-AGENT-TOOL-OK" in result["result"]
-    assert tools.executions == [("workspace.read_file", {"path": "notes.txt"})]
+    assert executed_tools == [("workspace.read_file", {"path": "notes.txt"})]
     assert store.get_task(task["id"])["status"] == "succeeded"
 
     journal = store.list_tool_executions(task["id"])
