@@ -516,6 +516,10 @@ class TaskStore:
                 "SELECT priority,COUNT(*) AS count FROM tasks WHERE status='queued' "
                 "GROUP BY priority ORDER BY priority DESC"
             ).fetchall()
+            oldest = con.execute(
+                "SELECT created_at FROM tasks WHERE status='queued' "
+                "ORDER BY created_at ASC, rowid ASC LIMIT 1"
+            ).fetchone()
             queued_times = con.execute(
                 "SELECT created_at FROM tasks WHERE status='queued' ORDER BY created_at ASC"
             ).fetchall()
