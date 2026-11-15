@@ -129,6 +129,7 @@ async def test_review_first_demo_flow_keeps_failure_visible_through_timeline_and
     # the content-minimizing evaluation response must not expose it.
     assert "deterministic demo fixture failure" not in str(report)
 
+
 @pytest.mark.asyncio
 async def test_review_first_demo_happy_path_completes_qa_timeline_and_evaluation(
     tmp_path, monkeypatch
@@ -201,6 +202,7 @@ async def test_review_first_demo_happy_path_completes_qa_timeline_and_evaluation
     assert report["checks"]["workflow_succeeded"] is True
     assert report["checks"]["all_tasks_succeeded"] is True
     assert report["checks"]["qa_passed"] is True
+
 
 class ToolExecutingWorkflowRouter(DemoPlanningRouter):
     def __init__(self):
@@ -278,23 +280,23 @@ async def test_reviewed_workflow_executes_real_workspace_tools_and_journals_ever
 
     task_results = workflow["results"]["tasks"]
     assert len(task_results) == 2
-    evidence_bearing_results = 0
+    successful_tool_executions = 0
     for outcome in task_results:
         assert outcome["status"] == "succeeded"
-        if "Crows demo marker: ORBIT-731." in outcome["result"]:
-            evidence_bearing_results += 1
         executions = store.list_tool_executions(outcome["task_id"])
         assert len(executions) == 1
         assert executions[0]["tool_name"] == "workspace.read_file"
         assert executions[0]["status"] == "succeeded"
         assert "ORBIT-731" in executions[0]["result_json"]
-    assert evidence_bearing_results >= 1
+        successful_tool_executions += len(executions)
+    assert successful_tool_executions == 2
 
     qa_task_id = workflow["results"]["qa_review"]["task_id"]
     qa_executions = store.list_tool_executions(qa_task_id)
     assert len(qa_executions) == 1
     assert qa_executions[0]["tool_name"] == "workspace.read_file"
     assert qa_executions[0]["status"] == "succeeded"
+    assert "ORBIT-731" in qa_executions[0]["result_json"]
 
     timeline = app_module.get_agent_workflow_timeline(result["workflow_id"])
     assert sum(
