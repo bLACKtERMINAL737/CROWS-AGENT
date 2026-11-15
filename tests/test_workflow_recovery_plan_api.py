@@ -185,3 +185,61 @@ async def test_recovery_plan_counts_missing_qa_task_as_manual_inspection(
     }
     assert preview["execution_started"] is False
     assert preview["state_mutated"] is False
+
+
+
+@pytest.mark.asyncio
+async def test_recovery_plan_rejects_qa_task_id_reused_by_specialist(
+    tmp_path, monkeypatch
+):
+    store = TaskStore(tmp_path / "recovery-plan-duplicate-qa.sqlite3")
+    shared = store.create_task(
+        "[qa_security] Review specialist results", "Review saved results"
+    )
+    workflow = store.create_workflow(
+        "Inspect safely",
+        [{
+            "title": "Review specialist results",
+            "input": "Review saved results",
+            "role": "qa_security",
+        }],
+    )
+    store.update_workflow(
+        workflow["id"],
+        "unknown",
+        results={
+            "tasks": [{
+                "plan_index": 0,
+                "task_id": shared["id"],
+                "title": "Review specialist results",
+                "role": "qa_security",
+                "status": "queued",
+                "depends_on": [],
+            }],
+            "qa_review": {"task_id": shared["id"], "status": "queued"},
+        },
+        error="simulated process interruption",
+    )
+    monkeypatch.setattr(app_module, "store", store)
+    monkeypatch.setenv("CROWS_API_TOKEN", API_TOKEN)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_isolated_app()),
+        base_url="http://127.0.0.1:8000",
+        headers={"X-Crows-Token": API_TOKEN},
+    ) as client:
+        response = await client.get(
+            f"/agents/workflows/{workflow['id']}/recovery-plan"
+        )
+
+    assert response.status_code == 200
+    preview = response.json()
+    assert preview["recoverable"] is False
+    assert preview["qa_review"]["disposition"] == "manual_inspection_required"
+    assert "qa_task_id_duplicates_specialist" in preview["qa_review"]["issues"]
+    assert preview["task_counts_by_disposition"] == {
+        "eligible_to_resume": 1,
+        "manual_inspection_required": 1,
+    }
+    assert preview["execution_started"] is False
+    assert preview["state_mutated"] is False
