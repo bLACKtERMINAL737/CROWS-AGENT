@@ -1,0 +1,142 @@
+import pytest
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
+
+from crows import app as app_module
+from crows.security import LocalAPIProtection
+from crows.store import TaskStore
+
+
+API_TOKEN = "crows-recovery-plan-api-token"
+
+
+def _isolated_app():
+    isolated = FastAPI()
+    isolated.router.routes = list(app_module.app.router.routes)
+    isolated.add_middleware(LocalAPIProtection)
+    return isolated
+
+
+@pytest.mark.asyncio
+async def test_recovery_plan_api_is_read_only_and_marks_uncertain_tasks(
+    tmp_path, monkeypatch
+):
+    store = TaskStore(tmp_path / "recovery-plan-api.sqlite3")
+    specialist = store.create_task("[research] Inspect files", "Read-only inspection")
+    qa = store.create_task(
+        "[qa_security] Review specialist results", "Review saved results"
+    )
+    workflow = store.create_workflow(
+        "Inspect safely",
+        [{
+            "title": "Inspect files",
+            "input": "Read-only inspection",
+            "role": "research",
+        }],
+    )
+    checkpoint = {
+        "tasks": [{
+            "plan_index": 0,
+            "task_id": specialist["id"],
+            "title": "Inspect files",
+            "role": "research",
+            "status": "unknown",
+            "depends_on": [],
+        }],
+        "qa_review": {"task_id": qa["id"], "status": "queued"},
+    }
+    store.update_workflow(
+        workflow["id"], "unknown", results=checkpoint,
+        error="simulated process interruption",
+    )
+    monkeypatch.setattr(app_module, "store", store)
+    monkeypatch.setenv("CROWS_API_TOKEN", API_TOKEN)
+
+    async def should_not_execute(_task_id):
+        pytest.fail("Recovery-plan preview must never execute a task")
+
+    monkeypatch.setattr(app_module, "run_agent_task", should_not_execute)
+    before_workflow = store.get_workflow(workflow["id"])
+    before_specialist = store.get_task(specialist["id"])
+    before_qa = store.get_task(qa["id"])
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_isolated_app()),
+        base_url="http://127.0.0.1:8000",
+        headers={"X-Crows-Token": API_TOKEN},
+    ) as client:
+        response = await client.get(
+            f"/agents/workflows/{workflow['id']}/recovery-plan"
+        )
+
+    assert response.status_code == 200
+    preview = response.json()
+    assert preview["recoverable"] is True
+    assert preview["workflow_status"] == "unknown"
+    assert preview["execution_started"] is False
+    assert preview["state_mutated"] is False
+    assert preview["task_counts_by_disposition"] == {
+        "uncertain_never_replay": 1,
+        "eligible_to_resume": 1,
+    }
+    specialist_preview = next(
+        item for item in preview["tasks"] if item["task_id"] == specialist["id"]
+    )
+    assert specialist_preview["disposition"] == "uncertain_never_replay"
+    assert preview["qa_review"]["task_id"] == qa["id"]
+    assert preview["qa_review"]["disposition"] == "eligible_to_resume"
+
+    assert store.get_workflow(workflow["id"]) == before_workflow
+    assert store.get_task(specialist["id"]) == before_specialist
+    assert store.get_task(qa["id"]) == before_qa
+
+
+@pytest.mark.asyncio
+async def test_recovery_plan_api_reports_checkpoint_journal_mismatch(
+    tmp_path, monkeypatch
+):
+    store = TaskStore(tmp_path / "recovery-plan-mismatch-api.sqlite3")
+    specialist = store.create_task("[research] Inspect files", "Read-only inspection")
+    workflow = store.create_workflow(
+        "Inspect safely",
+        [{
+            "title": "Inspect files",
+            "input": "Read-only inspection",
+            "role": "research",
+        }],
+    )
+    store.update_workflow(
+        workflow["id"], "unknown",
+        results={
+            "tasks": [{
+                "plan_index": 0,
+                "task_id": specialist["id"],
+                "title": "Inspect files",
+                "role": "research",
+                "status": "queued",
+                "depends_on": [],
+            }],
+            "qa_review": None,
+        },
+        error="simulated interruption",
+    )
+    store.set_task_status(specialist["id"], "running")
+    monkeypatch.setattr(app_module, "store", store)
+    monkeypatch.setenv("CROWS_API_TOKEN", API_TOKEN)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_isolated_app()),
+        base_url="http://127.0.0.1:8000",
+        headers={"X-Crows-Token": API_TOKEN},
+    ) as client:
+        response = await client.get(
+            f"/agents/workflows/{workflow['id']}/recovery-plan"
+        )
+
+    assert response.status_code == 200
+    preview = response.json()
+    assert preview["recoverable"] is False
+    assert "checkpoint_journal_mismatch" in preview["tasks"][0]["issues"]
+    assert preview["tasks"][0]["disposition"] == "manual_inspection_required"
+    assert store.get_workflow(workflow["id"])["status"] == "unknown"
+    assert store.get_task(specialist["id"])["status"] == "running"
