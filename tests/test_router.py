@@ -322,3 +322,78 @@ async def test_router_reports_single_success_attempt_history():
     assert result["attempt_history"] == [
         {"route": "primary", "attempt": 1, "outcome": "success"}
     ]
+
+
+
+class ToolAwareFakeProvider:
+    def __init__(self, name, error=None, *, execute_before_error=False):
+        self.model = name
+        self.configured = True
+        self.error = error
+        self.execute_before_error = execute_before_error
+        self.calls = 0
+
+    async def chat_with_tools(self, message, task_type="general", **kwargs):
+        self.calls += 1
+        if self.execute_before_error:
+            await kwargs["execute_tool"]("workspace__read_file", {"path": "known_facts.txt"})
+        if self.error is not None:
+            raise self.error
+        return {"answer": f"{self.model}: {message}", "tool_calls": 0}
+
+
+@pytest.mark.asyncio
+async def test_tool_execution_prevents_fallback_after_provider_transport_failure():
+    primary = ToolAwareFakeProvider(
+        "primary",
+        error=httpx.ConnectError("connection dropped after tool execution"),
+        execute_before_error=True,
+    )
+    fallback = ToolAwareFakeProvider("fallback")
+    executed = []
+
+    async def execute_tool(name, arguments):
+        executed.append((name, arguments))
+        return {"content": "Crows demo marker: ORBIT-731."}
+
+    router = ModelRouter(primary, fallback=fallback, max_attempts=1)
+    with pytest.raises(httpx.ConnectError, match="connection dropped"):
+        await router.chat_with_tools(
+            "Read known_facts.txt",
+            tool_specs=[{"type": "function", "function": {"name": "workspace__read_file"}}],
+            execute_tool=execute_tool,
+            execution_counter=lambda: bool(executed),
+        )
+
+    assert executed == [("workspace__read_file", {"path": "known_facts.txt"})]
+    assert primary.calls == 1
+    assert fallback.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_tool_router_can_fallback_when_transport_fails_before_any_tool_execution():
+    primary = ToolAwareFakeProvider(
+        "primary",
+        error=httpx.ConnectError("connection failed before tool execution"),
+    )
+    fallback = ToolAwareFakeProvider("fallback")
+    executed = []
+
+    async def execute_tool(name, arguments):
+        executed.append((name, arguments))
+        return {"content": "Crows demo marker: ORBIT-731."}
+
+    router = ModelRouter(primary, fallback=fallback, max_attempts=1)
+    result = await router.chat_with_tools(
+        "Read known_facts.txt",
+        tool_specs=[{"type": "function", "function": {"name": "workspace__read_file"}}],
+        execute_tool=execute_tool,
+        execution_counter=lambda: bool(executed),
+    )
+
+    assert result["answer"] == "fallback: Read known_facts.txt"
+    assert result["route"] == "fallback"
+    assert result["fallback_used"] is True
+    assert primary.calls == 1
+    assert fallback.calls == 1
+    assert executed == []
