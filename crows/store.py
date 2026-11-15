@@ -516,15 +516,33 @@ class TaskStore:
                 "SELECT priority,COUNT(*) AS count FROM tasks WHERE status='queued' "
                 "GROUP BY priority ORDER BY priority DESC"
             ).fetchall()
-            oldest = con.execute(
-                "SELECT created_at FROM tasks WHERE status='queued' "
+            queued_times = con.execute(
+                "SELECT created_at FROM tasks WHERE status='queued' ORDER BY created_at ASC"
+            ).fetchall()
+            oldest_running = con.execute(
+                "SELECT created_at FROM tasks WHERE status='running' "
                 "ORDER BY created_at ASC, rowid ASC LIMIT 1"
+            ).fetchone()
+            now = datetime.now(timezone.utc)
+            now_iso = now.isoformat()
+            lease_health = con.execute(
+                "SELECT "
+                "COALESCE(SUM(CASE WHEN lease_expires_at IS NOT NULL AND lease_expires_at<=? "
+                "THEN 1 ELSE 0 END),0) AS expired, "
+                "COALESCE(SUM(CASE WHEN lease_expires_at>? AND lease_expires_at<=? "
+                "THEN 1 ELSE 0 END),0) AS expiring "
+                "FROM tasks WHERE status='running'",
+                (
+                    now_iso,
+                    now_iso,
+                    datetime.fromtimestamp(now.timestamp() + 60, timezone.utc).isoformat(),
+                ),
             ).fetchone()
             aging = con.execute(
                 "SELECT MAX(priority + CAST(MAX(0, julianday(?) - julianday(created_at)) "
                 "* 1440 / 30 AS INTEGER)) AS top_effective_priority FROM tasks "
                 "WHERE status='queued'",
-                (utc_now(),),
+                (now_iso,),
             ).fetchone()
         counts = {status: 0 for status in STATUSES}
         counts.update({row["status"]: int(row["count"]) for row in rows})
@@ -533,10 +551,29 @@ class TaskStore:
             str(row["priority"]): int(row["count"]) for row in priorities
         }
         counts["oldest_queued_at"] = oldest["created_at"] if oldest else None
-        counts["oldest_queued_age_seconds"] = (
-            max(0, int((datetime.now(timezone.utc) - datetime.fromisoformat(oldest["created_at"])).total_seconds()))
-            if oldest else 0
+        queued_ages = sorted(
+            max(0, int((now - datetime.fromisoformat(row["created_at"])).total_seconds()))
+            for row in queued_times
         )
+        counts["oldest_queued_age_seconds"] = queued_ages[-1] if queued_ages else 0
+        # Nearest-rank percentiles: rank = ceil(p * n), converted to zero-based index.
+        counts["queued_age_p50_seconds"] = (
+            queued_ages[max(0, (50 * len(queued_ages) + 99) // 100 - 1)]
+            if queued_ages else 0
+        )
+        counts["queued_age_p95_seconds"] = (
+            queued_ages[max(0, (95 * len(queued_ages) + 99) // 100 - 1)]
+            if queued_ages else 0
+        )
+        counts["oldest_running_created_at"] = (
+            oldest_running["created_at"] if oldest_running else None
+        )
+        counts["oldest_running_age_seconds"] = (
+            max(0, int((now - datetime.fromisoformat(oldest_running["created_at"])).total_seconds()))
+            if oldest_running else 0
+        )
+        counts["running_with_expired_lease_count"] = int(lease_health["expired"] or 0)
+        counts["leases_expiring_within_60_seconds"] = int(lease_health["expiring"] or 0)
         counts["top_effective_priority_30m_aging"] = (
             int(aging["top_effective_priority"]) if aging and aging["top_effective_priority"] is not None else None
         )
