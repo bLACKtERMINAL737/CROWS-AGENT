@@ -142,3 +142,46 @@ async def test_recovery_plan_api_reports_checkpoint_journal_mismatch(
     assert preview["tasks"][0]["disposition"] == "manual_inspection_required"
     assert store.get_workflow(workflow["id"])["status"] == "unknown"
     assert store.get_task(specialist["id"])["status"] == "running"
+
+
+
+@pytest.mark.asyncio
+async def test_recovery_plan_counts_missing_qa_task_as_manual_inspection(
+    tmp_path, monkeypatch
+):
+    store = TaskStore(tmp_path / "recovery-plan-missing-qa.sqlite3")
+    workflow = store.create_workflow("Inspect safely", [])
+    store.update_workflow(
+        workflow["id"],
+        "unknown",
+        results={
+            "tasks": [],
+            "qa_review": {
+                "task_id": "missing-qa-task",
+                "status": "queued",
+            },
+        },
+        error="simulated process interruption",
+    )
+    monkeypatch.setattr(app_module, "store", store)
+    monkeypatch.setenv("CROWS_API_TOKEN", API_TOKEN)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_isolated_app()),
+        base_url="http://127.0.0.1:8000",
+        headers={"X-Crows-Token": API_TOKEN},
+    ) as client:
+        response = await client.get(
+            f"/agents/workflows/{workflow['id']}/recovery-plan"
+        )
+
+    assert response.status_code == 200
+    preview = response.json()
+    assert preview["recoverable"] is False
+    assert preview["qa_review"]["disposition"] == "manual_inspection_required"
+    assert "qa_task_missing_or_mismatched" in preview["qa_review"]["issues"]
+    assert preview["task_counts_by_disposition"] == {
+        "manual_inspection_required": 1,
+    }
+    assert preview["execution_started"] is False
+    assert preview["state_mutated"] is False
