@@ -243,3 +243,122 @@ async def test_recovery_plan_rejects_qa_task_id_reused_by_specialist(
     }
     assert preview["execution_started"] is False
     assert preview["state_mutated"] is False
+
+
+
+@pytest.mark.asyncio
+async def test_recovery_plan_rejects_duplicate_specialist_task_ids(
+    tmp_path, monkeypatch
+):
+    store = TaskStore(tmp_path / "recovery-plan-duplicate-specialist.sqlite3")
+    task = store.create_task("[research] Inspect files", "Read-only inspection")
+    plan_item = {
+        "title": "Inspect files",
+        "input": "Read-only inspection",
+        "role": "research",
+    }
+    workflow = store.create_workflow(
+        "Inspect safely", [plan_item, plan_item]
+    )
+    outcome = {
+        "task_id": task["id"],
+        "title": "Inspect files",
+        "role": "research",
+        "status": "queued",
+        "depends_on": [],
+    }
+    store.update_workflow(
+        workflow["id"],
+        "unknown",
+        results={
+            "tasks": [
+                {**outcome, "plan_index": 0},
+                {**outcome, "plan_index": 1},
+            ],
+            "qa_review": None,
+        },
+        error="simulated process interruption",
+    )
+    monkeypatch.setattr(app_module, "store", store)
+    monkeypatch.setenv("CROWS_API_TOKEN", API_TOKEN)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_isolated_app()),
+        base_url="http://127.0.0.1:8000",
+        headers={"X-Crows-Token": API_TOKEN},
+    ) as client:
+        response = await client.get(
+            f"/agents/workflows/{workflow['id']}/recovery-plan"
+        )
+
+    assert response.status_code == 200
+    preview = response.json()
+    assert preview["recoverable"] is False
+    assert preview["tasks"][0]["disposition"] == "eligible_to_resume"
+    assert preview["tasks"][1]["disposition"] == "manual_inspection_required"
+    assert "missing_or_duplicate_task_id" in preview["tasks"][1]["issues"]
+    assert preview["task_counts_by_disposition"] == {
+        "eligible_to_resume": 1,
+        "manual_inspection_required": 1,
+    }
+    assert preview["execution_started"] is False
+    assert preview["state_mutated"] is False
+
+
+@pytest.mark.asyncio
+async def test_recovery_plan_rejects_cyclic_dependency_checkpoint(
+    tmp_path, monkeypatch
+):
+    store = TaskStore(tmp_path / "recovery-plan-cycle.sqlite3")
+    first = store.create_task("[research] First", "Inspect first")
+    second = store.create_task("[research] Second", "Inspect second")
+    plan = [
+        {"title": "First", "input": "Inspect first", "role": "research"},
+        {"title": "Second", "input": "Inspect second", "role": "research"},
+    ]
+    workflow = store.create_workflow("Inspect safely", plan)
+    store.update_workflow(
+        workflow["id"],
+        "unknown",
+        results={
+            "tasks": [
+                {
+                    "plan_index": 0,
+                    "task_id": first["id"],
+                    "title": "First",
+                    "role": "research",
+                    "status": "queued",
+                    "depends_on": [1],
+                },
+                {
+                    "plan_index": 1,
+                    "task_id": second["id"],
+                    "title": "Second",
+                    "role": "research",
+                    "status": "queued",
+                    "depends_on": [0],
+                },
+            ],
+            "qa_review": None,
+        },
+        error="simulated process interruption",
+    )
+    monkeypatch.setattr(app_module, "store", store)
+    monkeypatch.setenv("CROWS_API_TOKEN", API_TOKEN)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_isolated_app()),
+        base_url="http://127.0.0.1:8000",
+        headers={"X-Crows-Token": API_TOKEN},
+    ) as client:
+        response = await client.get(
+            f"/agents/workflows/{workflow['id']}/recovery-plan"
+        )
+
+    assert response.status_code == 200
+    preview = response.json()
+    assert preview["recoverable"] is False
+    assert "dependency_graph_invalid" in preview["issues"]
+    assert preview["recovery_order"] == []
+    assert preview["execution_started"] is False
+    assert preview["state_mutated"] is False
