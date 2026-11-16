@@ -411,3 +411,63 @@ async def test_recovery_plan_rejects_out_of_range_dependency_index(
     assert preview["tasks"][0]["disposition"] == "eligible_to_resume"
     assert preview["execution_started"] is False
     assert preview["state_mutated"] is False
+
+
+
+@pytest.mark.asyncio
+async def test_recovery_plan_rejects_boolean_dependency_index(
+    tmp_path, monkeypatch
+):
+    store = TaskStore(tmp_path / "recovery-plan-boolean-dependency.sqlite3")
+    first = store.create_task("[research] First", "Inspect first")
+    second = store.create_task("[research] Second", "Inspect second")
+    plan = [
+        {"title": "First", "input": "Inspect first", "role": "research"},
+        {"title": "Second", "input": "Inspect second", "role": "research"},
+    ]
+    workflow = store.create_workflow("Inspect safely", plan)
+    store.update_workflow(
+        workflow["id"],
+        "unknown",
+        results={
+            "tasks": [
+                {
+                    "plan_index": 0,
+                    "task_id": first["id"],
+                    "title": "First",
+                    "role": "research",
+                    "status": "queued",
+                    "depends_on": [True],
+                },
+                {
+                    "plan_index": 1,
+                    "task_id": second["id"],
+                    "title": "Second",
+                    "role": "research",
+                    "status": "queued",
+                    "depends_on": [],
+                },
+            ],
+            "qa_review": None,
+        },
+        error="simulated process interruption",
+    )
+    monkeypatch.setattr(app_module, "store", store)
+    monkeypatch.setenv("CROWS_API_TOKEN", API_TOKEN)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_isolated_app()),
+        base_url="http://127.0.0.1:8000",
+        headers={"X-Crows-Token": API_TOKEN},
+    ) as client:
+        response = await client.get(
+            f"/agents/workflows/{workflow['id']}/recovery-plan"
+        )
+
+    assert response.status_code == 200
+    preview = response.json()
+    assert preview["recoverable"] is False
+    assert "dependency_graph_invalid" in preview["issues"]
+    assert preview["recovery_order"] == []
+    assert preview["execution_started"] is False
+    assert preview["state_mutated"] is False

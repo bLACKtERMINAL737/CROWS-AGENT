@@ -1945,6 +1945,17 @@ def get_agent_workflow_recovery_plan(workflow_id: str):
             }
 
     try:
+        for index, outcome in enumerate(outcomes):
+            dependencies = outcome.get("depends_on", [])
+            if not isinstance(dependencies, list) or any(
+                not isinstance(dep, int)
+                or isinstance(dep, bool)
+                or dep < 0
+                or dep >= len(outcomes)
+                or dep == index
+                for dep in dependencies
+            ) or len(set(dependencies)) != len(dependencies):
+                raise ValueError("Invalid dependency indexes in workflow checkpoint")
         recovery_order = dependency_order(outcomes) if outcomes else []
     except (TypeError, ValueError):
         recovery_order = []
