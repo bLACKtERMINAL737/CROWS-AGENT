@@ -542,3 +542,83 @@ async def test_recovery_plan_rejects_malformed_dependency_lists(
     assert preview["recovery_order"] == []
     assert preview["execution_started"] is False
     assert preview["state_mutated"] is False
+
+
+
+@pytest.mark.asyncio
+async def test_recovery_preview_rejects_checkpoint_dependency_plan_mismatch(
+    tmp_path, monkeypatch
+):
+    store = TaskStore(tmp_path / "recovery-plan-dependency-mismatch.sqlite3")
+    first = store.create_task("[research] First", "Inspect first")
+    second = store.create_task("[research] Second", "Inspect second")
+    plan = [
+        {"title": "First", "input": "Inspect first", "role": "research", "depends_on": []},
+        {"title": "Second", "input": "Inspect second", "role": "research", "depends_on": [0]},
+    ]
+    workflow = store.create_workflow("Inspect safely", plan)
+    store.update_workflow(
+        workflow["id"], "unknown",
+        results={"tasks": [
+            {"plan_index": 0, "task_id": first["id"], "title": "First", "role": "research", "status": "queued", "depends_on": []},
+            {"plan_index": 1, "task_id": second["id"], "title": "Second", "role": "research", "status": "queued", "depends_on": []},
+        ], "qa_review": None},
+        error="simulated process interruption",
+    )
+    monkeypatch.setattr(app_module, "store", store)
+    monkeypatch.setenv("CROWS_API_TOKEN", API_TOKEN)
+    async with AsyncClient(
+        transport=ASGITransport(app=_isolated_app()),
+        base_url="http://127.0.0.1:8000",
+        headers={"X-Crows-Token": API_TOKEN},
+    ) as client:
+        response = await client.get(f"/agents/workflows/{workflow['id']}/recovery-plan")
+    assert response.status_code == 200
+    preview = response.json()
+    assert preview["recoverable"] is False
+    assert "plan_dependency_mismatch" in preview["issues"]
+    assert preview["recovery_order"] == []
+    assert preview["execution_started"] is False
+    assert preview["state_mutated"] is False
+
+
+@pytest.mark.parametrize(
+    ("checkpoint_overrides", "expected_issue"),
+    [
+        ({"plan_index": 9}, "plan_index_mismatch"),
+        ({"role": "coding"}, "plan_role_mismatch"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_recovery_preview_rejects_checkpoint_identity_mismatch(
+    checkpoint_overrides, expected_issue, tmp_path, monkeypatch
+):
+    store = TaskStore(tmp_path / "recovery-plan-identity-mismatch.sqlite3")
+    task = store.create_task("[research] Inspect", "Read-only inspection")
+    plan = [{"title": "Inspect", "input": "Read-only inspection", "role": "research"}]
+    workflow = store.create_workflow("Inspect safely", plan)
+    outcome = {
+        "plan_index": 0, "task_id": task["id"], "title": "Inspect",
+        "role": "research", "status": "queued", "depends_on": [],
+    }
+    outcome.update(checkpoint_overrides)
+    store.update_workflow(
+        workflow["id"], "unknown",
+        results={"tasks": [outcome], "qa_review": None},
+        error="simulated process interruption",
+    )
+    monkeypatch.setattr(app_module, "store", store)
+    monkeypatch.setenv("CROWS_API_TOKEN", API_TOKEN)
+    async with AsyncClient(
+        transport=ASGITransport(app=_isolated_app()),
+        base_url="http://127.0.0.1:8000",
+        headers={"X-Crows-Token": API_TOKEN},
+    ) as client:
+        response = await client.get(f"/agents/workflows/{workflow['id']}/recovery-plan")
+    assert response.status_code == 200
+    preview = response.json()
+    assert preview["recoverable"] is False
+    assert expected_issue in preview["issues"]
+    assert preview["recovery_order"] == []
+    assert preview["execution_started"] is False
+    assert preview["state_mutated"] is False

@@ -1878,11 +1878,24 @@ def get_agent_workflow_recovery_plan(workflow_id: str):
         elif journal_status not in compatible[checkpoint_status]:
             reasons.append("checkpoint_journal_mismatch")
         if index < len(plan):
-            expected_title = f"[{plan[index].get('role', 'planner')}] {plan[index].get('title', '')}"
+            plan_item = plan[index]
+            expected_title = f"[{plan_item.get('role', 'planner')}] {plan_item.get('title', '')}"
             if task is not None and task.get("title") != expected_title:
                 reasons.append("task_identity_mismatch")
-            if outcome.get("title") != plan[index].get("title"):
+            if outcome.get("title") != plan_item.get("title"):
                 reasons.append("plan_title_mismatch")
+            plan_index = outcome.get("plan_index", index)
+            if not isinstance(plan_index, int) or isinstance(plan_index, bool) or plan_index != index:
+                reasons.append("plan_index_mismatch")
+            if outcome.get("role", plan_item.get("role")) != plan_item.get("role"):
+                reasons.append("plan_role_mismatch")
+            # Older persisted plans may not contain dependency metadata.
+            # Only compare checkpoint edges when the durable plan declared them.
+            if (
+                "depends_on" in plan_item
+                and outcome.get("depends_on", []) != plan_item.get("depends_on", [])
+            ):
+                reasons.append("plan_dependency_mismatch")
         else:
             reasons.append("plan_item_missing")
         if reasons:
@@ -1960,6 +1973,10 @@ def get_agent_workflow_recovery_plan(workflow_id: str):
     except (TypeError, ValueError):
         recovery_order = []
         issues.append("dependency_graph_invalid")
+    # A preview order is actionable guidance. Suppress it for any inconsistent
+    # checkpoint, even when the checkpoint's own dependency graph is acyclic.
+    if issues:
+        recovery_order = []
     counts: dict[str, int] = {}
     for row in task_rows:
         counts[row["disposition"]] = counts.get(row["disposition"], 0) + 1
