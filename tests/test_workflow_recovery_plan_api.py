@@ -622,3 +622,48 @@ async def test_recovery_preview_rejects_checkpoint_identity_mismatch(
     assert preview["recovery_order"] == []
     assert preview["execution_started"] is False
     assert preview["state_mutated"] is False
+
+
+
+@pytest.mark.asyncio
+async def test_recovery_preview_accepts_legacy_plan_default_role(
+    tmp_path, monkeypatch
+):
+    store = TaskStore(tmp_path / "recovery-plan-legacy-role.sqlite3")
+    task = store.create_task("[planner] Inspect", "Read-only inspection")
+    workflow = store.create_workflow(
+        "Legacy plan role",
+        [{"title": "Inspect", "input": "Read-only inspection"}],
+    )
+    store.update_workflow(
+        workflow["id"], "unknown",
+        results={"tasks": [{
+            "plan_index": 0,
+            "task_id": task["id"],
+            "title": "Inspect",
+            "role": "planner",
+            "status": "queued",
+            "depends_on": [],
+        }], "qa_review": None},
+        error="simulated interruption of a legacy workflow",
+    )
+    monkeypatch.setattr(app_module, "store", store)
+    monkeypatch.setenv("CROWS_API_TOKEN", API_TOKEN)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_isolated_app()),
+        base_url="http://127.0.0.1:8000",
+        headers={"X-Crows-Token": API_TOKEN},
+    ) as client:
+        response = await client.get(
+            f"/agents/workflows/{workflow['id']}/recovery-plan"
+        )
+
+    assert response.status_code == 200
+    preview = response.json()
+    assert preview["recoverable"] is True
+    assert preview["issues"] == []
+    assert preview["tasks"][0]["disposition"] == "eligible_to_resume"
+    assert preview["recovery_order"] == [0]
+    assert preview["execution_started"] is False
+    assert preview["state_mutated"] is False
