@@ -1889,7 +1889,12 @@ def get_agent_workflow_recovery_plan(workflow_id: str):
                 reasons.append("plan_index_mismatch")
             if outcome.get("role", plan_item.get("role")) != plan_item.get("role"):
                 reasons.append("plan_role_mismatch")
-            if outcome.get("depends_on", []) != plan_item.get("depends_on", []):
+            # Older persisted plans may not contain dependency metadata.
+            # Only compare checkpoint edges when the durable plan declared them.
+            if (
+                "depends_on" in plan_item
+                and outcome.get("depends_on", []) != plan_item.get("depends_on", [])
+            ):
                 reasons.append("plan_dependency_mismatch")
         else:
             reasons.append("plan_item_missing")
