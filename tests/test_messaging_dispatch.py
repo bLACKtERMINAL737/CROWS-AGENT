@@ -100,3 +100,25 @@ def test_expired_dispatch_without_reply_remains_unknown(tmp_path):
         con.execute("UPDATE messaging_inbound_dispatch SET lease_until='2000-01-01T00:00:00+00:00' WHERE id=?", (route["id"],))
     assert dispatch.expire_leases() == 1
     assert dispatch.get(route["id"])["state"] == "unknown"
+
+
+
+def test_concurrent_dispatch_store_initialization_serializes_schema_migration(
+    tmp_path,
+):
+    db = tmp_path / "concurrent-dispatch-init.sqlite3"
+    MessagingStore(db)
+
+    def initialize(_):
+        return InboundDispatchStore(db)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        stores = list(pool.map(initialize, range(8)))
+
+    assert len(stores) == 8
+    with stores[0].connect() as con:
+        columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(messaging_inbound_dispatch)")
+        }
+    assert "reply_text" in columns
