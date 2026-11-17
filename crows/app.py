@@ -1968,7 +1968,11 @@ def get_agent_workflow_recovery_plan(workflow_id: str):
     except (TypeError, ValueError):
         recovery_order = []
         issues.append("dependency_graph_invalid")
-    counts: dict[str, int] = {}
+    # A preview order is actionable guidance. Suppress it for any inconsistent
+    # checkpoint, even when the checkpoint's own dependency graph is acyclic.
+    if issues:
+        recovery_order = []
+    counts: dict[str, int] = {};
     for row in task_rows:
         counts[row["disposition"]] = counts.get(row["disposition"], 0) + 1
     if qa_preview is not None:
