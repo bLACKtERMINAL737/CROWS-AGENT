@@ -47,9 +47,18 @@ class InboundDispatchStore:
                 CREATE INDEX IF NOT EXISTS idx_inbound_dispatch_session
                     ON messaging_inbound_dispatch(channel, conversation_id, created_at);
             """)
-            columns = {row["name"] for row in con.execute("PRAGMA table_info(messaging_inbound_dispatch)")}
+            # Serialize schema inspection and ALTER TABLE across processes.
+            # Without this lock, two first-start workers can both observe the
+            # missing column and race to add it.
+            con.execute("BEGIN IMMEDIATE")
+            columns = {
+                row["name"]
+                for row in con.execute("PRAGMA table_info(messaging_inbound_dispatch)")
+            }
             if "reply_text" not in columns:
-                con.execute("ALTER TABLE messaging_inbound_dispatch ADD COLUMN reply_text TEXT")
+                con.execute(
+                    "ALTER TABLE messaging_inbound_dispatch ADD COLUMN reply_text TEXT"
+                )
 
     def connect(self) -> sqlite3.Connection:
         con = sqlite3.connect(self.db_path, timeout=10)
