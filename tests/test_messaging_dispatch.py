@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+import crows.messaging_dispatch as dispatch_module
 from crows.messaging_dispatch import InboundDispatchError, InboundDispatchStore
 from crows.messaging_store import MessagingStore
 
@@ -122,3 +123,27 @@ def test_concurrent_dispatch_store_initialization_serializes_schema_migration(
             for row in con.execute("PRAGMA table_info(messaging_inbound_dispatch)")
         }
     assert "reply_text" in columns
+
+
+
+def test_finish_rechecks_lease_expiry_at_write_time(tmp_path, monkeypatch):
+    dispatch, route = _queued(tmp_path)
+    dispatch.claim(worker_id="worker-a", limit=1)
+    with dispatch.connect() as con:
+        con.execute(
+            "UPDATE messaging_inbound_dispatch SET lease_until=? WHERE id=?",
+            ("2026-06-01T00:00:00+00:00", route["id"]),
+        )
+
+    clock = iter((
+        "2026-01-01T00:00:00+00:00",
+        "2026-07-01T00:00:00+00:00",
+    ))
+    monkeypatch.setattr(dispatch_module, "_now", lambda: next(clock))
+
+    assert dispatch.finish(
+        route["id"], worker_id="worker-a", state="completed"
+    ) is False
+    row = dispatch.get(route["id"])
+    assert row["state"] == "processing"
+    assert row["lease_owner"] == "worker-a"
