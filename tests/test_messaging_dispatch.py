@@ -3,6 +3,8 @@ from pathlib import Path
 
 import pytest
 
+import crows.messaging_dispatch as dispatch_module
+
 from crows.messaging_dispatch import InboundDispatchError, InboundDispatchStore
 from crows.messaging_store import MessagingStore
 
@@ -183,3 +185,4 @@ def test_expired_checkpointed_lease_can_be_recovered_only_once(tmp_path):
     assert len(recovered) == 1
     assert recovered[0]["reply_text"] == "saved answer"
     assert dispatch.claim(worker_id="worker-c", limit=1) == []
+

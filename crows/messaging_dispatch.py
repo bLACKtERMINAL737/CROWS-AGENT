@@ -198,13 +198,17 @@ class InboundDispatchStore:
             if (row is None or row["lease_owner"] != worker_id
                     or not row["lease_until"] or row["lease_until"] < now):
                 return False
+            # Re-check wall-clock expiry in the write predicate as well:
+            # a lease can expire after the initial read but before this update.
+            finished_at = _now()
             next_state = "pending" if state == "pending" and row["reply_text"] else state
             con.execute(
                 """UPDATE messaging_inbound_dispatch
                    SET state=?,lease_owner=NULL,lease_until=NULL,
                        diagnostic=?,updated_at=?
-                   WHERE id=? AND state='processing' AND lease_owner=?""",
-                (next_state, diagnostic, now, dispatch_id, worker_id),
+                   WHERE id=? AND state='processing' AND lease_owner=?
+                     AND lease_until >= ?""",
+                (next_state, diagnostic, finished_at, dispatch_id, worker_id, finished_at),
             )
             return con.execute("SELECT changes()").fetchone()[0] == 1
 
