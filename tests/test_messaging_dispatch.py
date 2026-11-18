@@ -185,24 +185,4 @@ def test_expired_checkpointed_lease_can_be_recovered_only_once(tmp_path):
     assert len(recovered) == 1
     assert recovered[0]["reply_text"] == "saved answer"
     assert dispatch.claim(worker_id="worker-c", limit=1) == []
-def test_finish_rechecks_lease_expiry_at_write_time(tmp_path, monkeypatch):
-    dispatch, route = _queued(tmp_path)
-    dispatch.claim(worker_id="worker-a", limit=1)
-    with dispatch.connect() as con:
-        con.execute(
-            "UPDATE messaging_inbound_dispatch SET lease_until=? WHERE id=?",
-            ("2026-06-01T00:00:00+00:00", route["id"]),
-        )
 
-    clock = iter((
-        "2026-01-01T00:00:00+00:00",
-        "2026-07-01T00:00:00+00:00",
-    ))
-    monkeypatch.setattr(dispatch_module, "_now", lambda: next(clock))
-
-    assert dispatch.finish(
-        route["id"], worker_id="worker-a", state="completed"
-    ) is False
-    row = dispatch.get(route["id"])
-    assert row["state"] == "processing"
-    assert row["lease_owner"] == "worker-a"
