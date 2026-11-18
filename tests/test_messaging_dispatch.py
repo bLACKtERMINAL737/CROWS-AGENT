@@ -122,3 +122,64 @@ def test_concurrent_dispatch_store_initialization_serializes_schema_migration(
             for row in con.execute("PRAGMA table_info(messaging_inbound_dispatch)")
         }
     assert "reply_text" in columns
+
+
+
+def test_lease_renewal_is_fenced_to_current_unexpired_owner(tmp_path):
+    dispatch, route = _queued(tmp_path)
+    claimed = dispatch.claim(worker_id="worker-a", limit=1, lease_seconds=30)[0]
+
+    assert dispatch.renew(route["id"], worker_id="worker-b", lease_seconds=60) is False
+    assert dispatch.renew(route["id"], worker_id="worker-a", lease_seconds=60) is True
+    renewed = dispatch.get(route["id"])
+    assert renewed["lease_owner"] == "worker-a"
+    assert renewed["lease_until"] > claimed["lease_until"]
+
+
+def test_expired_lease_cannot_be_revived_by_renewal_or_finished(tmp_path):
+    dispatch, route = _queued(tmp_path)
+    dispatch.claim(worker_id="worker-a", limit=1)
+    with dispatch.connect() as con:
+        con.execute(
+            "UPDATE messaging_inbound_dispatch SET lease_until=? WHERE id=?",
+            ("2000-01-01T00:00:00+00:00", route["id"]),
+        )
+
+    assert dispatch.renew(route["id"], worker_id="worker-a") is False
+    assert dispatch.finish(
+        route["id"], worker_id="worker-a", state="completed"
+    ) is False
+    assert dispatch.get(route["id"])["state"] == "processing"
+
+
+def test_checkpointed_reply_is_immutable_for_a_dispatch(tmp_path):
+    dispatch, route = _queued(tmp_path)
+    dispatch.claim(worker_id="worker-a", limit=1)
+
+    assert dispatch.save_reply(
+        route["id"], worker_id="worker-a", reply_text="first durable answer"
+    ) is True
+    assert dispatch.save_reply(
+        route["id"], worker_id="worker-a", reply_text="different answer"
+    ) is False
+    assert dispatch.get(route["id"])["reply_text"] == "first durable answer"
+
+
+def test_expired_checkpointed_lease_can_be_recovered_only_once(tmp_path):
+    dispatch, route = _queued(tmp_path)
+    dispatch.claim(worker_id="worker-a", limit=1)
+    assert dispatch.save_reply(
+        route["id"], worker_id="worker-a", reply_text="saved answer"
+    )
+    with dispatch.connect() as con:
+        con.execute(
+            "UPDATE messaging_inbound_dispatch SET lease_until=? WHERE id=?",
+            ("2000-01-01T00:00:00+00:00", route["id"]),
+        )
+
+    assert dispatch.expire_leases() == 1
+    assert dispatch.expire_leases() == 0
+    recovered = dispatch.claim(worker_id="worker-b", limit=1)
+    assert len(recovered) == 1
+    assert recovered[0]["reply_text"] == "saved answer"
+    assert dispatch.claim(worker_id="worker-c", limit=1) == []
