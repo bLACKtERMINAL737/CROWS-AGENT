@@ -214,3 +214,141 @@ def test_add_session_turn_once_is_idempotent(runtime):
     second = sessions.add_session_turn_once("dispatch-123", session["id"], "hello", "hi")
     assert [r["id"] for r in first] == [r["id"] for r in second]
     assert len(sessions.list_session_messages(session["id"])) == 2
+
+
+
+@pytest.mark.asyncio
+async def test_expired_reply_checkpoint_recovers_without_second_model_call(runtime):
+    messages, dispatches, sessions, router = runtime
+    _, session, queued = enqueue_telegram(runtime, text="please help")
+    first_claim = dispatches.claim(worker_id="worker-crashed", limit=1)[0]
+
+    result = await process_inbound_dispatch(
+        first_claim,
+        worker_id="worker-crashed",
+        dispatches=dispatches,
+        messages=messages,
+        sessions=sessions,
+        router=router,
+    )
+    assert result == "completed"
+    assert len(router.calls) == 1
+
+    # Simulate a crash after a reply has been checkpointed and outbound delivery
+    # has been queued, but before the dispatch's completion state was persisted.
+    with dispatches.connect() as con:
+        con.execute(
+            """UPDATE messaging_inbound_dispatch
+               SET state='processing', lease_owner='worker-crashed',
+                   lease_until='2000-01-01T00:00:00+00:00'
+               WHERE id=?""",
+            (queued["id"],),
+        )
+
+    assert dispatches.expire_leases() == 1
+    recovered = dispatches.get(queued["id"])
+    assert recovered["state"] == "pending"
+    assert recovered["reply_text"] == "Hello from Crows"
+
+    second_claim = dispatches.claim(worker_id="worker-recovered", limit=1)[0]
+    result = await process_inbound_dispatch(
+        second_claim,
+        worker_id="worker-recovered",
+        dispatches=dispatches,
+        messages=messages,
+        sessions=sessions,
+        router=router,
+    )
+
+    assert result == "completed"
+    assert len(router.calls) == 1
+    assert dispatches.get(queued["id"])["state"] == "completed"
+    outbound = messages.get_outbound(
+        "telegram", f"inbound-reply:{queued['id']}"
+    )
+    assert outbound["status"] == "accepted"
+    assert outbound["text"] == "Hello from Crows"
+    assert [
+        (row["role"], row["content"])
+        for row in sessions.list_session_messages(session["id"])
+    ] == [
+        ("user", "please help"),
+        ("assistant", "Hello from Crows"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_outbox_queue_idempotency_survives_dispatch_recovery(runtime, monkeypatch):
+    messages, dispatches, sessions, router = runtime
+    _, _, queued = enqueue_telegram(runtime, provider_message_id="recovery-duplicate")
+    claim = dispatches.claim(worker_id="worker-1", limit=1)[0]
+    original_queue = messages.queue_outbound
+    attempts = 0
+
+    def queue_then_raise(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        result = original_queue(**kwargs)
+        if attempts == 1:
+            raise RuntimeError("simulated interruption after durable outbox insert")
+        return result
+
+    monkeypatch.setattr(messages, "queue_outbound", queue_then_raise)
+    first = await process_inbound_dispatch(
+        claim, worker_id="worker-1", dispatches=dispatches,
+        messages=messages, sessions=sessions, router=router,
+    )
+    assert first == "pending"
+    assert dispatches.get(queued["id"])["reply_text"] == "Hello from Crows"
+
+    recovered_claim = dispatches.claim(worker_id="worker-2", limit=1)[0]
+    second = await process_inbound_dispatch(
+        recovered_claim, worker_id="worker-2", dispatches=dispatches,
+        messages=messages, sessions=sessions, router=router,
+    )
+
+    assert second == "completed"
+    assert len(router.calls) == 1
+    with messages.connect() as con:
+        rows = con.execute(
+            """SELECT idempotency_key,COUNT(*) AS count
+               FROM messaging_messages
+               WHERE direction='outbound' AND idempotency_key=?
+               GROUP BY idempotency_key""",
+            (f"inbound-reply:{queued['id']}",),
+        ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_lease_loss_after_model_response_does_not_queue_reply(runtime, monkeypatch):
+    messages, dispatches, sessions, router = runtime
+    _, _, queued = enqueue_telegram(runtime, provider_message_id="lease-lost")
+    claim = dispatches.claim(worker_id="worker-1", limit=1)[0]
+    original_save = dispatches.save_reply
+
+    def lose_lease_before_checkpoint(dispatch_id, *, worker_id, reply_text):
+        with dispatches.connect() as con:
+            con.execute(
+                """UPDATE messaging_inbound_dispatch
+                   SET lease_until='2000-01-01T00:00:00+00:00'
+                   WHERE id=?""",
+                (dispatch_id,),
+            )
+        return original_save(
+            dispatch_id, worker_id=worker_id, reply_text=reply_text
+        )
+
+    monkeypatch.setattr(dispatches, "save_reply", lose_lease_before_checkpoint)
+    result = await process_inbound_dispatch(
+        claim, worker_id="worker-1", dispatches=dispatches,
+        messages=messages, sessions=sessions, router=router,
+    )
+
+    assert result == "unknown"
+    assert len(router.calls) == 1
+    assert dispatches.get(queued["id"])["state"] == "processing"
+    assert messages.get_outbound(
+        "telegram", f"inbound-reply:{queued['id']}"
+    ) is None
