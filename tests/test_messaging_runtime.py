@@ -312,8 +312,9 @@ async def test_outbox_queue_idempotency_survives_dispatch_recovery(runtime, monk
     with messages.connect() as con:
         rows = con.execute(
             """SELECT idempotency_key,COUNT(*) AS count
-               FROM messaging_outbox
-               WHERE idempotency_key=? GROUP BY idempotency_key""",
+               FROM messaging_messages
+               WHERE direction='outbound' AND idempotency_key=?
+               GROUP BY idempotency_key""",
             (f"inbound-reply:{queued['id']}",),
         ).fetchall()
     assert len(rows) == 1
