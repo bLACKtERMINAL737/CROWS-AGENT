@@ -1041,6 +1041,15 @@ async def messaging_worker_loop() -> None:
         await asyncio.sleep(interval)
 
 
+def _outbound_delivery_status(receipt: Any) -> str:
+    """Classify provider outcomes without replaying requests with uncertain results."""
+    if receipt.success:
+        return "sent"
+    if receipt.status_code == 408 or receipt.status_code >= 500:
+        return "unknown"
+    return "failed"
+
+
 async def deliver_outbound_batch(
     *, worker_id: str = "crows-claw-worker", limit: int = 10,
     message_id: str | None = None,
@@ -1120,16 +1129,7 @@ async def deliver_outbound_batch(
                 else:
                     outcomes["skipped"] += 1
                 continue
-            # A timeout-like response or server error does not prove that the
-            # provider rejected the message: it may have accepted the request
-            # before failing to produce a usable response. Never auto-replay
-            # these outcomes, because doing so can send duplicate messages.
-            if not receipt.success and (
-                receipt.status_code == 408 or receipt.status_code >= 500
-            ):
-                status = "unknown"
-            else:
-                status = "sent" if receipt.success else "failed"
+            status = _outbound_delivery_status(receipt)
             finished = messaging_store.finish_outbound_lease(
                 message_id, worker_id=worker_id, status=status,
                 provider_message_id=receipt.provider_message_id,
