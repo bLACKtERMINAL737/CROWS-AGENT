@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+import crows.messaging_store as messaging_store_module
 from crows.messaging_store import MessagingStore
 
 
@@ -558,3 +559,33 @@ def test_reconcile_unknown_rejects_duplicate_provider_message_id_atomically(
             "SELECT COUNT(*) FROM messaging_delivery_reconciliations WHERE message_id=?",
             (second["message"]["id"],),
         ).fetchone()[0] == 0
+
+def test_finish_outbound_lease_rechecks_expiry_at_write_time(tmp_path: Path, monkeypatch):
+    from cryptography.fernet import Fernet
+    from datetime import datetime, timedelta, timezone
+
+    monkeypatch.setenv("CROWS_MESSAGING_TARGET_KEY", Fernet.generate_key().decode())
+    store = MessagingStore(tmp_path / "finish-expiry-race.sqlite3")
+    queued = store.queue_outbound(
+        channel="telegram", provider_user_id="u1", text="ready",
+        idempotency_key="finish-expiry-race", delivery_target="123",
+    )
+    message_id = queued["message"]["id"]
+    assert store.claim_outbound(worker_id="worker-a", lease_seconds=30)
+
+    before_expiry = datetime.now(timezone.utc).isoformat()
+    after_expiry = (datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat()
+    clock = iter((before_expiry, after_expiry))
+    monkeypatch.setattr(messaging_store_module, "_now", lambda: next(clock))
+
+    assert not store.finish_outbound_lease(
+        message_id, worker_id="worker-a", status="sent"
+    )
+    assert store.get_outbound("telegram", "finish-expiry-race")["status"] == "accepted"
+    with store.connect() as con:
+        lease = con.execute(
+            "SELECT lease_owner FROM messaging_delivery_leases WHERE message_id=?",
+            (message_id,),
+        ).fetchone()
+    assert lease is not None
+    assert lease["lease_owner"] == "worker-a"
