@@ -461,9 +461,7 @@ class MessagingStore:
             raise ValueError("delay_seconds must be an integer between 1 and 300")
         if isinstance(max_retries, bool) or not isinstance(max_retries, int) or not 0 <= max_retries <= 5:
             raise ValueError("max_retries must be an integer between 0 and 5")
-        now_dt = datetime.now(timezone.utc)
-        now = now_dt.isoformat()
-        next_attempt = (now_dt + timedelta(seconds=delay_seconds)).isoformat()
+        now = _now()
         with self.connect() as con:
             con.execute("BEGIN IMMEDIATE")
             lease = con.execute(
@@ -482,23 +480,43 @@ class MessagingStore:
                     "max_retries cannot change after retry scheduling begins"
                 )
             retry_count = (existing["retry_count"] if existing else 0) + 1
+            scheduled_at = _now()
+            if lease["lease_until"] < scheduled_at:
+                return "lease_lost"
+            next_attempt = (
+                datetime.fromisoformat(scheduled_at) + timedelta(seconds=delay_seconds)
+            ).isoformat()
             if retry_count > max_retries:
                 con.execute(
-                    "UPDATE messaging_messages SET status='failed', updated_at=? WHERE id=? AND status='accepted'",
-                    (now, message_id),
+                    """UPDATE messaging_messages SET status='failed', updated_at=?
+                       WHERE id=? AND status='accepted'
+                         AND EXISTS (
+                           SELECT 1 FROM messaging_delivery_leases
+                           WHERE message_id=? AND lease_owner=? AND lease_until >= ?
+                         )""",
+                    (scheduled_at, message_id, message_id, worker_id, scheduled_at),
                 )
+                if con.execute("SELECT changes()").fetchone()[0] != 1:
+                    return "lease_lost"
                 con.execute("DELETE FROM messaging_delivery_leases WHERE message_id=?", (message_id,))
                 return "exhausted"
             con.execute(
                 """INSERT INTO messaging_delivery_retries(message_id,retry_count,max_retries,next_attempt_at,updated_at)
-                   VALUES(?,?,?,?,?)
+                   SELECT ?,?,?,?,?
+                   WHERE EXISTS (
+                     SELECT 1 FROM messaging_delivery_leases
+                     WHERE message_id=? AND lease_owner=? AND lease_until >= ?
+                   )
                    ON CONFLICT(message_id) DO UPDATE SET
                      retry_count=excluded.retry_count,
                      max_retries=excluded.max_retries,
                      next_attempt_at=excluded.next_attempt_at,
                      updated_at=excluded.updated_at""",
-                (message_id, retry_count, max_retries, next_attempt, now),
+                (message_id, retry_count, max_retries, next_attempt, scheduled_at,
+                 message_id, worker_id, scheduled_at),
             )
+            if con.execute("SELECT changes()").fetchone()[0] != 1:
+                return "lease_lost"
             con.execute("DELETE FROM messaging_delivery_leases WHERE message_id=?", (message_id,))
             return "scheduled"
 
