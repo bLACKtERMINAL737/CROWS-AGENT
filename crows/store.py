@@ -1355,11 +1355,22 @@ class TaskStore:
 
     def add_memory(self, category: str, content: str, source: str = "user",
                    tags: list[str] | None = None) -> dict[str, Any]:
+        if not isinstance(category, str) or not category.strip():
+            raise ValueError("category must not be blank")
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("content must not be blank")
+        if not isinstance(source, str):
+            raise ValueError("source must be a string")
+        if tags is not None and (
+            not isinstance(tags, list)
+            or any(not isinstance(tag, str) or not tag.strip() for tag in tags)
+        ):
+            raise ValueError("tags must be a list of non-blank strings")
         memory_id, now = str(uuid4()), utc_now()
         with self.connect() as con:
             clean_category = category.strip()
             clean_content = content.strip()
-            clean_tags = tags or []
+            clean_tags = [tag.strip() for tag in (tags or [])]
             con.execute(
                 "INSERT INTO memories(id,category,content,source,tags_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
                 (memory_id, clean_category, clean_content, source.strip() or "user",
