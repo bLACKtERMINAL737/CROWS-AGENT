@@ -1264,7 +1264,7 @@ def test_update_memory_rejects_non_string_category_and_content(tmp_path: Path):
     memory = store.add_memory("project", "Crows")
 
     for field, value in (("category", 7), ("content", ["not", "text"])):
-        with pytest.raises(ValueError, match=f"{field} must be a non-blank string"):
+        with pytest.raises(ValueError, match=f"{field} must be a string"):
             store.update_memory(memory["id"], **{field: value})
 
     saved = store.get_memory(memory["id"])
