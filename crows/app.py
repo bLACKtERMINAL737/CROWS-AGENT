@@ -1050,6 +1050,35 @@ def _outbound_delivery_status(receipt: Any) -> str:
     return "failed"
 
 
+async def _send_outbound_with_lease_renewal(
+    adapter: Any, message: OutboundTransportMessage, *, message_id: str,
+    worker_id: str, lease_seconds: int = 60,
+) -> Any:
+    """Keep a provider send fenced by a periodically renewed delivery lease."""
+    async def renew_while_sending() -> None:
+        while True:
+            await asyncio.sleep(max(1, lease_seconds // 3))
+            if not messaging_store.renew_outbound_lease(
+                message_id, worker_id=worker_id, lease_seconds=lease_seconds
+            ):
+                raise RuntimeError("Outbound delivery lease ownership was lost during send")
+
+    sending = asyncio.create_task(adapter.send(message))
+    heartbeat = asyncio.create_task(renew_while_sending())
+    try:
+        done, _ = await asyncio.wait(
+            {sending, heartbeat}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if heartbeat in done:
+            heartbeat.result()
+        return await sending
+    finally:
+        for task in (heartbeat, sending):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(heartbeat, sending, return_exceptions=True)
+
+
 async def deliver_outbound_batch(
     *, worker_id: str = "crows-claw-worker", limit: int = 10,
     message_id: str | None = None,
@@ -1085,13 +1114,15 @@ async def deliver_outbound_batch(
                 outcomes["failed"] += 1
                 continue
             try:
-                receipt = await adapter.send(
+                receipt = await _send_outbound_with_lease_renewal(
+                    adapter,
                     OutboundTransportMessage(
                         channel=channel,
                         delivery_target=target,
                         text=item["text"],
                         idempotency_key=item["idempotency_key"],
-                    )
+                    ),
+                    message_id=message_id, worker_id=worker_id, lease_seconds=60,
                 )
             except (httpx.HTTPError, ValueError) as exc:
                 finished = messaging_store.finish_outbound_lease(

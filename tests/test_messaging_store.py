@@ -633,3 +633,67 @@ def test_retry_outbound_lease_rechecks_expiry_before_scheduling(tmp_path: Path, 
         ).fetchone()
     assert lease["lease_owner"] == "worker"
     assert store.get_outbound("telegram", "retry-lease-expiry")["status"] == "accepted"
+
+
+def test_renew_outbound_lease_extends_only_current_unexpired_owner(tmp_path: Path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from cryptography.fernet import Fernet
+
+    monkeypatch.setenv("CROWS_MESSAGING_TARGET_KEY", Fernet.generate_key().decode())
+    store = MessagingStore(tmp_path / "renew-outbound.sqlite3")
+    queued = store.queue_outbound(
+        channel="telegram", provider_user_id="u", text="hello",
+        idempotency_key="renew-outbound", delivery_target="123",
+    )
+    message_id = queued["message"]["id"]
+    assert store.claim_outbound(worker_id="worker-a", lease_seconds=30)
+
+    base = datetime.now(timezone.utc).replace(microsecond=0)
+    expires = (base + timedelta(seconds=10)).isoformat()
+    with store.connect() as con:
+        con.execute(
+            "UPDATE messaging_delivery_leases SET lease_until=? WHERE message_id=?",
+            (expires, message_id),
+        )
+
+    clock = iter([
+        (base + timedelta(seconds=2)).isoformat(),
+        (base + timedelta(seconds=3)).isoformat(),
+    ])
+    monkeypatch.setattr(messaging_store_module, "_now", lambda: next(clock))
+    assert store.renew_outbound_lease(
+        message_id, worker_id="worker-a", lease_seconds=60
+    )
+    with store.connect() as con:
+        lease = con.execute(
+            "SELECT lease_owner, lease_until FROM messaging_delivery_leases WHERE message_id=?",
+            (message_id,),
+        ).fetchone()
+    assert lease["lease_owner"] == "worker-a"
+    assert datetime.fromisoformat(lease["lease_until"]) >= base + timedelta(seconds=63)
+
+
+def test_renew_outbound_lease_rejects_wrong_owner_and_expired_lease(tmp_path: Path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from cryptography.fernet import Fernet
+
+    monkeypatch.setenv("CROWS_MESSAGING_TARGET_KEY", Fernet.generate_key().decode())
+    store = MessagingStore(tmp_path / "renew-outbound-reject.sqlite3")
+    queued = store.queue_outbound(
+        channel="telegram", provider_user_id="u", text="hello",
+        idempotency_key="renew-outbound-reject", delivery_target="123",
+    )
+    message_id = queued["message"]["id"]
+    assert store.claim_outbound(worker_id="worker-a", lease_seconds=30)
+    assert not store.renew_outbound_lease(
+        message_id, worker_id="worker-b", lease_seconds=60
+    )
+    expired = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    with store.connect() as con:
+        con.execute(
+            "UPDATE messaging_delivery_leases SET lease_until=? WHERE message_id=?",
+            (expired, message_id),
+        )
+    assert not store.renew_outbound_lease(
+        message_id, worker_id="worker-a", lease_seconds=60
+    )
