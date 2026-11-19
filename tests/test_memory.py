@@ -655,3 +655,39 @@ def test_memory_search_bengali_recall_includes_explicitly_saved_facts(tmp_path):
 
     assert results
     assert results[0]["id"] == saved["id"]
+
+
+def test_chat_memory_recall_returns_explicit_bengali_saved_fact(tmp_path):
+    store = TaskStore(tmp_path / "bengali-chat-recall.sqlite3")
+    saved = store.add_memory(
+        "project",
+        "আমার প্রজেক্টের নাম Crows",
+        source="explicit_chat_request",
+    )
+
+    answer = app_module._memory_recall_answer(
+        "আমি কী মনে রাখতে বলেছিলাম?",
+        [saved],
+    )
+
+    assert answer == "আমার প্রজেক্টের নাম Crows"
+
+
+def test_chat_memory_recall_does_not_guess_when_bengali_facts_are_ambiguous():
+    memories = [
+        {
+            "source": "explicit_chat_request",
+            "content": "আমার প্রজেক্টের নাম Crows",
+        },
+        {
+            "source": "explicit_chat_request",
+            "content": "আমার প্রজেক্টের নাম Northstar",
+        },
+    ]
+
+    answer = app_module._memory_recall_answer(
+        "আমার প্রজেক্টের নাম কী মনে আছে?",
+        memories,
+    )
+
+    assert answer is None
