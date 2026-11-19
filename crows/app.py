@@ -1475,7 +1475,7 @@ def _memory_recall_answer(message: str, memories: list[dict]) -> str | None:
         "what", "which", "is", "the", "a", "an", "do", "you", "i", "me", "my",
         "did", "to", "ask", "asked", "tell", "remember", "remembered", "save",
         "saved", "about", "please", "that", "and", "or", "of", "for", "in",
-        "বলেছিলাম", "বলেছিলে", "মনে", "আছে", "কি", "কী", "আমার", "নাম",
+        "বলেছিলাম", "বলেছিলে", "মনে", "আছে", "কি", "কী", "আমি", "আমার", "রাখতে", "নাম",
     }
     terms = {
         term for term in re.findall(r"[a-z0-9_+-]+|[\u0980-\u09ff]+", text)
