@@ -589,3 +589,47 @@ def test_finish_outbound_lease_rechecks_expiry_at_write_time(tmp_path: Path, mon
         ).fetchone()
     assert lease is not None
     assert lease["lease_owner"] == "worker-a"
+
+
+
+def test_retry_outbound_lease_rechecks_expiry_before_scheduling(tmp_path: Path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from cryptography.fernet import Fernet
+
+    monkeypatch.setenv("CROWS_MESSAGING_TARGET_KEY", Fernet.generate_key().decode())
+    store = MessagingStore(tmp_path / "retry-lease-expiry.sqlite3")
+    queued = store.queue_outbound(
+        channel="telegram", provider_user_id="u", text="hello",
+        idempotency_key="retry-lease-expiry", delivery_target="123",
+    )
+    message_id = queued["message"]["id"]
+    assert store.claim_outbound(worker_id="worker", lease_seconds=30)
+
+    base = datetime.now(timezone.utc).replace(microsecond=0)
+    expires = (base + timedelta(seconds=5)).isoformat()
+    with store.connect() as con:
+        con.execute(
+            "UPDATE messaging_delivery_leases SET lease_until=? WHERE message_id=?",
+            (expires, message_id),
+        )
+
+    clock = iter([
+        (base + timedelta(seconds=4)).isoformat(),
+        (base + timedelta(seconds=6)).isoformat(),
+    ])
+    monkeypatch.setattr(messaging_store_module, "_now", lambda: next(clock))
+
+    assert store.retry_outbound_lease(
+        message_id, worker_id="worker", delay_seconds=10, max_retries=2
+    ) == "lease_lost"
+    with store.connect() as con:
+        assert con.execute(
+            "SELECT 1 FROM messaging_delivery_retries WHERE message_id=?",
+            (message_id,),
+        ).fetchone() is None
+        lease = con.execute(
+            "SELECT lease_owner FROM messaging_delivery_leases WHERE message_id=?",
+            (message_id,),
+        ).fetchone()
+    assert lease["lease_owner"] == "worker"
+    assert store.get_outbound("telegram", "retry-lease-expiry")["status"] == "accepted"
