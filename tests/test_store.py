@@ -1217,3 +1217,41 @@ def test_queue_metrics_include_oldest_age_and_effective_priority(tmp_path: Path)
     metrics = store.task_queue_metrics()
     assert metrics["oldest_queued_age_seconds"] > 0
     assert metrics["top_effective_priority_30m_aging"] >= -2
+
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    "category,content,source,tags",
+    [
+        ("", "content", "user", None),
+        ("category", "   ", "user", None),
+        ("category", "content", None, None),
+        ("category", "content", "user", "not-a-list"),
+        ("category", "content", "user", ["valid", "   "]),
+        ("category", "content", "user", ["valid", 7]),
+    ],
+)
+def test_add_memory_rejects_invalid_fields_before_persisting(
+    tmp_path: Path, category, content, source, tags
+):
+    store = TaskStore(tmp_path / "invalid-memory.sqlite3")
+
+    with pytest.raises(ValueError):
+        store.add_memory(category, content, source=source, tags=tags)
+
+    assert store.list_memories(limit=None) == []
+
+
+def test_add_memory_normalizes_valid_tags_before_indexing(tmp_path: Path):
+    store = TaskStore(tmp_path / "valid-memory.sqlite3")
+
+    memory = store.add_memory(
+        " project ", " Crows memory index ", tags=[" agent ", "memory"]
+    )
+
+    assert memory["category"] == "project"
+    assert memory["content"] == "Crows memory index"
+    assert memory["tags"] == ["agent", "memory"]
+    assert [item["id"] for item in store.search_memories("agent")] == [memory["id"]]
