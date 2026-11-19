@@ -1510,7 +1510,9 @@ def _memory_recall_answer(message: str, memories: list[dict]) -> str | None:
             candidates.append((0, len(words), content))
     if not candidates:
         return None
-    candidates.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+    # Rank only by meaningful overlap. Fact length is not evidence that one
+    # candidate is more relevant; using it as a tiebreaker can hide ambiguity.
+    candidates.sort(key=lambda item: item[0], reverse=True)
     best_score = candidates[0][0]
     best = [item for item in candidates if item[0] == best_score]
     # Duplicate records containing the same fact are not ambiguous. Treat

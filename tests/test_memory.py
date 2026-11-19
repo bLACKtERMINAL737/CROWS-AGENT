@@ -691,3 +691,37 @@ def test_chat_memory_recall_does_not_guess_when_bengali_facts_are_ambiguous():
     )
 
     assert answer is None
+
+
+def test_chat_memory_recall_does_not_break_ties_by_fact_length():
+    memories = [
+        {
+            "source": "explicit_chat_request",
+            "content": "Project name Crows",
+        },
+        {
+            "source": "explicit_chat_request",
+            "content": "Project name Northstar with additional saved context and details",
+        },
+    ]
+
+    answer = app_module._memory_recall_answer("What is my project name?", memories)
+
+    assert answer is None
+
+
+def test_chat_memory_recall_prefers_distinctive_overlap_over_unrelated_fact():
+    memories = [
+        {
+            "source": "explicit_chat_request",
+            "content": "Project name Crows",
+        },
+        {
+            "source": "explicit_chat_request",
+            "content": "My saved editor preference is Vim",
+        },
+    ]
+
+    answer = app_module._memory_recall_answer("What is my project name?", memories)
+
+    assert answer == "Project name Crows"
