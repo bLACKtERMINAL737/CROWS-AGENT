@@ -1392,14 +1392,14 @@ class TaskStore:
         tags: list[str] | None = None,
     ) -> dict[str, Any] | None:
         """Update editable memory fields and their search terms atomically."""
-        if category is not None and (
-            not isinstance(category, str) or not category.strip()
-        ):
-            raise ValueError("category must be a non-blank string")
-        if content is not None and (
-            not isinstance(content, str) or not content.strip()
-        ):
-            raise ValueError("content must be a non-blank string")
+        if category is not None and not isinstance(category, str):
+            raise ValueError("category must be a string")
+        if category is not None and not category.strip():
+            raise ValueError("category must not be blank")
+        if content is not None and not isinstance(content, str):
+            raise ValueError("content must be a string")
+        if content is not None and not content.strip():
+            raise ValueError("content must not be blank")
         if tags is not None and (
             not isinstance(tags, list)
             or any(not isinstance(tag, str) or not tag.strip() for tag in tags)
