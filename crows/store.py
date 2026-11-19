@@ -1392,6 +1392,20 @@ class TaskStore:
         tags: list[str] | None = None,
     ) -> dict[str, Any] | None:
         """Update editable memory fields and their search terms atomically."""
+        if category is not None and not isinstance(category, str):
+            raise ValueError("category must be a string")
+        if category is not None and not category.strip():
+            raise ValueError("category must not be blank")
+        if content is not None and not isinstance(content, str):
+            raise ValueError("content must be a string")
+        if content is not None and not content.strip():
+            raise ValueError("content must not be blank")
+        if tags is not None and (
+            not isinstance(tags, list)
+            or any(not isinstance(tag, str) or not tag.strip() for tag in tags)
+        ):
+            raise ValueError("tags must be a list of non-blank strings")
+
         with self.connect() as con:
             row = con.execute(
                 "SELECT category, content, tags_json FROM memories WHERE id=?",
@@ -1403,14 +1417,6 @@ class TaskStore:
             clean_category = (category if category is not None else row["category"]).strip()
             clean_content = (content if content is not None else row["content"]).strip()
             clean_tags = tags if tags is not None else json.loads(row["tags_json"])
-            if not clean_category:
-                raise ValueError("category must not be blank")
-            if not clean_content:
-                raise ValueError("content must not be blank")
-            if not isinstance(clean_tags, list) or any(
-                not isinstance(tag, str) or not tag.strip() for tag in clean_tags
-            ):
-                raise ValueError("tags must be a list of non-blank strings")
             clean_tags = [tag.strip() for tag in clean_tags]
 
             con.execute("DELETE FROM memory_search_terms WHERE memory_id=?", (memory_id,))

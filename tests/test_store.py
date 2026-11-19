@@ -1255,3 +1255,52 @@ def test_add_memory_normalizes_valid_tags_before_indexing(tmp_path: Path):
     assert memory["content"] == "Crows memory index"
     assert memory["tags"] == ["agent", "memory"]
     assert [item["id"] for item in store.search_memories("agent")] == [memory["id"]]
+
+
+def test_update_memory_rejects_non_string_category_and_content(tmp_path: Path):
+    import pytest
+
+    store = TaskStore(tmp_path / "update-memory-invalid-text.sqlite3")
+    memory = store.add_memory("project", "Crows")
+
+    for field, value in (("category", 7), ("content", ["not", "text"])):
+        with pytest.raises(ValueError, match=f"{field} must be a string"):
+            store.update_memory(memory["id"], **{field: value})
+
+    saved = store.get_memory(memory["id"])
+    assert saved is not None
+    assert saved["category"] == "project"
+    assert saved["content"] == "Crows"
+
+
+def test_update_memory_rejects_invalid_tags_without_changing_index(tmp_path: Path):
+    import pytest
+
+    store = TaskStore(tmp_path / "update-memory-invalid-tags.sqlite3")
+    memory = store.add_memory("project", "Crows memory", tags=["agent"])
+
+    for invalid_tags in ("agent", ["valid", 7], ["valid", "  "]):
+        with pytest.raises(ValueError, match="tags must be a list of non-blank strings"):
+            store.update_memory(memory["id"], tags=invalid_tags)
+
+    saved = store.get_memory(memory["id"])
+    assert saved is not None
+    assert saved["tags"] == ["agent"]
+    assert [item["id"] for item in store.search_memories("agent")] == [memory["id"]]
+
+
+def test_update_memory_normalizes_text_and_tags_before_reindexing(tmp_path: Path):
+    store = TaskStore(tmp_path / "update-memory-normalized.sqlite3")
+    memory = store.add_memory("project", "Old content", tags=["old"])
+
+    updated = store.update_memory(
+        memory["id"], category="  agent  ", content="  Crows runtime  ",
+        tags=[" runtime ", "agent"],
+    )
+
+    assert updated is not None
+    assert updated["category"] == "agent"
+    assert updated["content"] == "Crows runtime"
+    assert updated["tags"] == ["runtime", "agent"]
+    assert store.search_memories("old") == []
+    assert [item["id"] for item in store.search_memories("runtime")] == [memory["id"]]
