@@ -212,3 +212,32 @@ def test_telegram_timestamp_uses_utc_now_when_missing():
     parsed = datetime.fromisoformat(_telegram_received_at(None))
     assert parsed.tzinfo is not None
     assert parsed.utcoffset().total_seconds() == 0
+
+
+@pytest.mark.parametrize("status_code", [408, 500, 502, 503, 504])
+def test_provider_timeout_and_server_errors_are_ambiguous_delivery_outcomes(status_code):
+    from crows.app import _outbound_delivery_status
+    from crows.messaging_adapters import OutboundTransportReceipt
+
+    assert _outbound_delivery_status(
+        OutboundTransportReceipt(False, status_code)
+    ) == "unknown"
+
+
+@pytest.mark.parametrize("status_code", [400, 401, 403, 404, 422])
+def test_provider_client_errors_are_definitive_delivery_failures(status_code):
+    from crows.app import _outbound_delivery_status
+    from crows.messaging_adapters import OutboundTransportReceipt
+
+    assert _outbound_delivery_status(
+        OutboundTransportReceipt(False, status_code)
+    ) == "failed"
+
+
+def test_successful_provider_receipt_is_sent():
+    from crows.app import _outbound_delivery_status
+    from crows.messaging_adapters import OutboundTransportReceipt
+
+    assert _outbound_delivery_status(
+        OutboundTransportReceipt(True, 200, "provider-123")
+    ) == "sent"
