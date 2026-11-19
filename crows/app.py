@@ -1481,8 +1481,10 @@ def _memory_recall_answer(message: str, memories: list[dict]) -> str | None:
         term for term in re.findall(r"[a-z0-9_+-]+|[\u0980-\u09ff]+", text)
         if len(term) > 1 and term not in stop_words
     }
-    if not terms:
-        return None
+    bengali_general_recall = bool(
+        re.search(r"(আমি|আমার|মনে|রাখতে|বলেছিলাম|বলেছিলে|কী|কি)", text)
+        and re.search(r"(মনে আছে|কি মনে|কী মনে|বলেছিলাম|বলেছিলে)", text)
+    )
     candidates = []
     for item in memories:
         if item.get("source") != "explicit_chat_request":
@@ -1502,6 +1504,10 @@ def _memory_recall_answer(message: str, memories: list[dict]) -> str | None:
         overlap = terms & words
         if overlap:
             candidates.append((len(overlap), len(words), content))
+        elif bengali_general_recall and not terms:
+            # Broad Bengali "what did I ask you to remember?" recall is safe
+            # only when exactly one distinct explicit fact is available.
+            candidates.append((0, len(words), content))
     if not candidates:
         return None
     candidates.sort(key=lambda item: (item[0], -item[1]), reverse=True)
