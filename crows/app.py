@@ -1120,7 +1120,16 @@ async def deliver_outbound_batch(
                 else:
                     outcomes["skipped"] += 1
                 continue
-            status = "sent" if receipt.success else "failed"
+            # A timeout-like response or server error does not prove that the
+            # provider rejected the message: it may have accepted the request
+            # before failing to produce a usable response. Never auto-replay
+            # these outcomes, because doing so can send duplicate messages.
+            if not receipt.success and (
+                receipt.status_code == 408 or receipt.status_code >= 500
+            ):
+                status = "unknown"
+            else:
+                status = "sent" if receipt.success else "failed"
             finished = messaging_store.finish_outbound_lease(
                 message_id, worker_id=worker_id, status=status,
                 provider_message_id=receipt.provider_message_id,
