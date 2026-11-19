@@ -402,23 +402,27 @@ class MessagingStore:
         with self.connect() as con:
             con.execute("BEGIN IMMEDIATE")
             lease = con.execute(
-                "SELECT lease_owner FROM messaging_delivery_leases WHERE message_id=?",
+                """SELECT lease_owner, lease_until FROM messaging_delivery_leases
+                   WHERE message_id=?""",
                 (message_id,),
             ).fetchone()
-            if lease is None or lease["lease_owner"] != worker_id:
+            if (lease is None or lease["lease_owner"] != worker_id
+                    or lease["lease_until"] < now):
                 return False
-            lease_row = con.execute(
-                "SELECT lease_until FROM messaging_delivery_leases WHERE message_id=?",
-                (message_id,),
-            ).fetchone()
-            if lease_row is None or lease_row["lease_until"] < now:
-                return False
+            # Re-check lease expiry in the write predicate: the lease may expire
+            # after the initial read but before the outbound status transition.
+            finished_at = _now()
             try:
                 con.execute(
                     """UPDATE messaging_messages SET status=?, failure_code=?,
                        provider_message_id=COALESCE(?,provider_message_id), updated_at=?
-                       WHERE id=? AND direction='outbound' AND status='accepted'""",
-                    (status, failure_code, provider_message_id, now, message_id),
+                       WHERE id=? AND direction='outbound' AND status='accepted'
+                         AND EXISTS (
+                           SELECT 1 FROM messaging_delivery_leases
+                           WHERE message_id=? AND lease_owner=? AND lease_until >= ?
+                         )""",
+                    (status, failure_code, provider_message_id, finished_at,
+                     message_id, message_id, worker_id, finished_at),
                 )
             except sqlite3.IntegrityError as exc:
                 raise MessagingContractError(
