@@ -352,3 +352,68 @@ async def test_lease_loss_after_model_response_does_not_queue_reply(runtime, mon
     assert messages.get_outbound(
         "telegram", f"inbound-reply:{queued['id']}"
     ) is None
+
+@pytest.mark.asyncio
+async def test_lease_loss_after_outbox_queue_recovers_without_duplicate_reply(
+    runtime, monkeypatch
+):
+    messages, dispatches, sessions, router = runtime
+    _, session, queued = enqueue_telegram(
+        runtime, provider_message_id="lease-lost-after-outbox"
+    )
+    first_claim = dispatches.claim(worker_id="worker-1", limit=1)[0]
+    original_finish = dispatches.finish
+    expired_once = False
+
+    def lose_lease_before_finish(dispatch_id, *, worker_id, state, diagnostic=None):
+        nonlocal expired_once
+        if not expired_once:
+            expired_once = True
+            with dispatches.connect() as con:
+                con.execute(
+                    """UPDATE messaging_inbound_dispatch
+                       SET lease_until='2000-01-01T00:00:00+00:00'
+                       WHERE id=?""",
+                    (dispatch_id,),
+                )
+        return original_finish(
+            dispatch_id, worker_id=worker_id, state=state, diagnostic=diagnostic
+        )
+
+    monkeypatch.setattr(dispatches, "finish", lose_lease_before_finish)
+    first_result = await process_inbound_dispatch(
+        first_claim, worker_id="worker-1", dispatches=dispatches,
+        messages=messages, sessions=sessions, router=router,
+    )
+
+    assert first_result == "unknown"
+    assert dispatches.get(queued["id"])["reply_text"] == "Hello from Crows"
+    assert messages.get_outbound(
+        "telegram", f"inbound-reply:{queued['id']}"
+    )["text"] == "Hello from Crows"
+    assert len(router.calls) == 1
+
+    assert dispatches.expire_leases() == 1
+    recovered_claim = dispatches.claim(worker_id="worker-2", limit=1)[0]
+    second_result = await process_inbound_dispatch(
+        recovered_claim, worker_id="worker-2", dispatches=dispatches,
+        messages=messages, sessions=sessions, router=router,
+    )
+
+    assert second_result == "completed"
+    assert dispatches.get(queued["id"])["state"] == "completed"
+    assert len(router.calls) == 1
+    assert [
+        (row["role"], row["content"])
+        for row in sessions.list_session_messages(session["id"])
+    ] == [
+        ("user", "hi"),
+        ("assistant", "Hello from Crows"),
+    ]
+    with messages.connect() as con:
+        rows = con.execute(
+            """SELECT COUNT(*) AS count FROM messaging_messages
+               WHERE direction='outbound' AND idempotency_key=?""",
+            (f"inbound-reply:{queued['id']}",),
+        ).fetchone()
+    assert rows["count"] == 1
