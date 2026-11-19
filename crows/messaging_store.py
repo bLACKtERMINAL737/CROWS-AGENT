@@ -377,6 +377,32 @@ class MessagingStore:
                                 "lease_until": lease_until})
         return claimed
 
+    def renew_outbound_lease(
+        self, message_id: str, *, worker_id: str, lease_seconds: int = 60,
+    ) -> bool:
+        """Extend an unexpired outbound lease only for its current owner."""
+        if not isinstance(worker_id, str) or not worker_id.strip() or len(worker_id) > 128:
+            raise MessagingContractError("worker_id is invalid")
+        if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, int) or not 5 <= lease_seconds <= 900:
+            raise ValueError("lease_seconds must be an integer between 5 and 900")
+        now = _now()
+        renewed_at = _now()
+        lease_until = (
+            datetime.fromisoformat(renewed_at) + timedelta(seconds=lease_seconds)
+        ).isoformat()
+        with self.connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            con.execute(
+                """UPDATE messaging_delivery_leases SET lease_until=?, updated_at=?
+                   WHERE message_id=? AND lease_owner=? AND lease_until >= ?
+                     AND EXISTS (
+                       SELECT 1 FROM messaging_messages
+                       WHERE id=? AND direction='outbound' AND status='accepted'
+                     )""",
+                (lease_until, renewed_at, message_id, worker_id.strip(), now, message_id),
+            )
+            return con.execute("SELECT changes()").fetchone()[0] == 1
+
     def finish_outbound_lease(
         self, message_id: str, *, worker_id: str, status: str,
         provider_message_id: str | None = None, failure_code: str | None = None,
