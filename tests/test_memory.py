@@ -635,3 +635,23 @@ def test_memory_recall_still_returns_explicit_candidate_without_lexical_match(tm
 
     assert results
     assert results[0]["id"] == saved["id"]
+
+
+def test_memory_search_bengali_recall_includes_explicitly_saved_facts(tmp_path):
+    store = TaskStore(tmp_path / "bengali-memory-recall.sqlite3")
+    saved = store.add_memory(
+        "note",
+        "আমার প্রজেক্টের নাম Crows",
+        source="explicit_chat_request",
+        tags=["chat", "user-requested"],
+    )
+    store.add_memory(
+        "note",
+        "Unrelated ordinary preference",
+        source="user",
+    )
+
+    results = store.search_memories("আমি কী মনে রাখতে বলেছিলাম?", limit=5)
+
+    assert results
+    assert results[0]["id"] == saved["id"]
