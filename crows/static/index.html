@@ -24,7 +24,7 @@ html,body{height:100%;background:var(--bg)}body{background:var(--bg);font-size:1
 .app-sidebar{position:sticky;top:0;height:100vh;overflow:auto;background:#0d1117;border-right:1px solid #202630;padding:14px 12px;display:flex;flex-direction:column;gap:12px}
 .brand{display:flex;align-items:center;gap:10px;padding:8px 9px 18px;font-weight:700;letter-spacing:-.025em}.brand-mark{display:grid;place-items:center;width:30px;height:30px;border-radius:10px;background:var(--accent);color:#061018;font-weight:900}
 .sidebar-action{width:100%;display:flex;align-items:center;gap:9px;text-align:left;background:transparent;border:1px solid #303844;color:var(--text);border-radius:10px;padding:10px 12px}.sidebar-action:hover{background:#18202a}
-.sidebar-label{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:#758194;padding:10px 9px 2px}.sidebar-history{display:flex;flex-direction:column;gap:8px}.sidebar-history select{width:100%;min-width:0;background:#121821;border-color:#303844;font-size:13px}
+.sidebar-label{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:#758194;padding:10px 9px 2px}.sidebar-history{display:flex;flex-direction:column;gap:8px}.sidebar-history select{width:100%;min-width:0;background:#121821;border-color:#303844;font-size:13px}.sidebar-search{display:grid;gap:7px}.sidebar-search input{padding:8px 9px;font-size:12px;border-radius:9px}.sidebar-search .sidebar-action{font-size:12px;padding:8px 9px}.sidebar-search-results{display:grid;gap:6px;max-height:34vh;overflow:auto}.sidebar-search-result{width:100%;text-align:left;white-space:normal;overflow-wrap:anywhere;padding:8px;border:1px solid #293440;border-radius:9px;background:#101720;font-size:11px}.sidebar-search-result strong{display:block;color:#dbeafe;margin-bottom:3px}.sidebar-search-pages{display:flex;gap:6px}.sidebar-search-pages button{flex:1;padding:6px;font-size:11px}.sidebar-search-pages button:disabled{opacity:.4}
 .sidebar-bottom{margin-top:auto;border-top:1px solid #252b34;padding:14px 8px 4px;color:#a8b0bc;font-size:12px}
 .app-main{min-width:0;width:100%;max-width:none;margin:0;padding:0 24px 32px;display:flex;flex-direction:column;align-items:center}
 .app-topbar{height:58px;width:100%;max-width:900px;display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid #202630;margin-bottom:16px}.app-topbar-title{font-size:14px;font-weight:600;color:#e5e7eb}.app-topbar-controls{display:flex;align-items:center;gap:8px}.app-topbar-controls select{width:auto;max-width:200px;padding:7px 10px}
@@ -70,6 +70,20 @@ main>.warning{display:none}main>.panel[style*="margin-top:14px"]{display:none!im
   <button type="button" class="sidebar-action" id="sidebarNewChat"><span aria-hidden="true">＋</span> New chat</button>
   <div class="sidebar-label">Recent chats</div>
   <div class="sidebar-history" id="sidebarHistory"></div>
+  <section class="sidebar-search" aria-labelledby="sessionSearchHeading">
+    <div class="sidebar-label" id="sessionSearchHeading">Search all conversations</div>
+    <form id="sessionSearchForm">
+      <label class="sr-only" for="sessionSearchQuery">Search conversation messages</label>
+      <input id="sessionSearchQuery" type="search" maxlength="300" placeholder="Search messages…" autocomplete="off">
+      <button class="sidebar-action" id="sessionSearchSubmit" type="submit">Search conversations</button>
+    </form>
+    <div id="sessionSearchStatus" class="muted small" role="status" aria-live="polite"></div>
+    <div id="sessionSearchResults" class="sidebar-search-results" aria-label="Conversation search results"></div>
+    <div class="sidebar-search-pages">
+      <button type="button" id="sessionSearchPrev" disabled>Previous</button>
+      <button type="button" id="sessionSearchNext" disabled>Next</button>
+    </div>
+  </section>
   <div class="sidebar-bottom">AI can make mistakes. Review important results.</div>
 </aside>
 <main class="app-main">
@@ -549,6 +563,49 @@ function renderChatMessages(messages){
  }
  box.scrollTop=box.scrollHeight;
 }
+let sessionSearchOffset=0;
+const SESSION_SEARCH_PAGE_SIZE=20;
+let sessionSearchQuery="";
+async function runSessionSearch(nextOffset=0){
+ const query=$("sessionSearchQuery").value.trim();
+ const results=$("sessionSearchResults");
+ if(!query){sessionSearchQuery="";sessionSearchOffset=0;results.replaceChildren();$("sessionSearchStatus").textContent="Enter words to search across saved conversations."; $("sessionSearchPrev").disabled=true;$("sessionSearchNext").disabled=true;return;}
+ sessionSearchQuery=query;sessionSearchOffset=nextOffset;
+ $("sessionSearchSubmit").disabled=true;$("sessionSearchPrev").disabled=true;$("sessionSearchNext").disabled=true;
+ $("sessionSearchStatus").textContent="Searching saved conversations…";results.replaceChildren();
+ try{
+  const data=await api("/sessions/search",{method:"POST",body:JSON.stringify({query,limit:SESSION_SEARCH_PAGE_SIZE,offset:sessionSearchOffset})});
+  const messages=data.messages||[];
+  if(!messages.length){
+   $("sessionSearchStatus").textContent=sessionSearchOffset?"No more results.":"No matching messages found.";
+  }else{
+   $("sessionSearchStatus").textContent="Showing "+(sessionSearchOffset+1)+"–"+(sessionSearchOffset+messages.length)+" matching messages.";
+   for(const message of messages){
+    const button=document.createElement("button");button.type="button";button.className="sidebar-search-result";
+    const title=document.createElement("strong");title.textContent=message.session_title||"Conversation";
+    const snippet=document.createElement("span");snippet.textContent=(message.role==="user"?"You: ":"Crows: ")+String(message.content||"").slice(0,180);
+    const time=document.createElement("span");time.className="muted";time.textContent=message.created_at||"";
+    button.append(title,snippet,time);
+    button.addEventListener("click",async()=>{
+     const select=$("sessionSelect");
+     if(!Array.from(select.options).some(option=>option.value===message.session_id)){
+      const option=document.createElement("option");option.value=message.session_id;option.textContent=message.session_title||"Conversation";select.append(option);
+     }
+     select.value=message.session_id;
+     await openSession(message.session_id);
+    });
+    results.append(button);
+   }
+  }
+  $("sessionSearchPrev").disabled=sessionSearchOffset===0;
+  $("sessionSearchNext").disabled=messages.length<SESSION_SEARCH_PAGE_SIZE;
+ }catch(e){$("sessionSearchStatus").textContent="Search failed: "+e.message;}
+ finally{$("sessionSearchSubmit").disabled=false;}
+}
+$("sessionSearchForm").addEventListener("submit",event=>{event.preventDefault();runSessionSearch(0);});
+$("sessionSearchPrev").addEventListener("click",()=>runSessionSearch(Math.max(0,sessionSearchOffset-SESSION_SEARCH_PAGE_SIZE)));
+$("sessionSearchNext").addEventListener("click",()=>runSessionSearch(sessionSearchOffset+SESSION_SEARCH_PAGE_SIZE));
+
 async function refreshSessions(){
  try{
   const data=await api("/sessions?limit=100");
