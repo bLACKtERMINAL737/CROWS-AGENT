@@ -576,9 +576,11 @@ async function runSessionSearch(nextOffset=0){
  $("sessionSearchSubmit").disabled=true;$("sessionSearchPrev").disabled=true;$("sessionSearchNext").disabled=true;
  $("sessionSearchStatus").textContent="Searching saved conversations…";results.replaceChildren();
  try{
-  const data=await api("/sessions/search",{method:"POST",body:JSON.stringify({query,limit:SESSION_SEARCH_PAGE_SIZE,offset:sessionSearchOffset})});
+  const data=await api("/sessions/search",{method:"POST",body:JSON.stringify({query,limit:SESSION_SEARCH_PAGE_SIZE+1,offset:sessionSearchOffset})});
   if(generation!==sessionSearchGeneration || query!==$("sessionSearchQuery").value.trim())return;
-  const messages=data.messages||[];
+  const pageMessages=data.messages||[];
+  const hasMore=pageMessages.length>SESSION_SEARCH_PAGE_SIZE;
+  const messages=pageMessages.slice(0,SESSION_SEARCH_PAGE_SIZE);
   if(!messages.length){
    $("sessionSearchStatus").textContent=sessionSearchOffset?"No more results.":"No matching messages found.";
   }else{
@@ -601,7 +603,7 @@ async function runSessionSearch(nextOffset=0){
    }
   }
   $("sessionSearchPrev").disabled=sessionSearchOffset===0;
-  $("sessionSearchNext").disabled=messages.length<SESSION_SEARCH_PAGE_SIZE;
+  $("sessionSearchNext").disabled=!hasMore;
  }catch(e){if(generation===sessionSearchGeneration)$("sessionSearchStatus").textContent="Search failed: "+e.message;}
  finally{if(generation===sessionSearchGeneration)$("sessionSearchSubmit").disabled=false;}
 }
