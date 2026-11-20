@@ -432,6 +432,7 @@ class MemorySearchRequest(BaseModel):
 class SessionSearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=300)
     limit: int = Field(default=20, ge=1, le=100)
+    offset: int = Field(default=0, ge=0, le=100_000)
 
     @field_validator("query")
     @classmethod
@@ -4130,7 +4131,13 @@ def get_session(session_id: str, limit: int = 100):
 
 @app.post("/sessions/search")
 def search_sessions(request: SessionSearchRequest):
-    return {"messages": store.search_session_messages(request.query, limit=request.limit)}
+    return {
+        "messages": store.search_session_messages(
+            request.query, limit=request.limit, offset=request.offset
+        ),
+        "limit": request.limit,
+        "offset": request.offset,
+    }
 
 
 @app.delete("/sessions/{session_id}")
