@@ -1345,3 +1345,31 @@ def test_session_search_requires_all_query_terms(tmp_path: Path):
     )
 
     assert store.search_session_messages("প্রজেক্টের Crows") == []
+
+
+def test_session_search_paginates_without_duplicates(tmp_path: Path):
+    store = TaskStore(tmp_path / "session-search-pagination.sqlite3")
+    session = store.create_session("Pagination")
+    for index in range(5):
+        store.add_session_message(session["id"], "user", f"shared marker item {index}")
+
+    first = store.search_session_messages("shared marker", limit=2)
+    second = store.search_session_messages("shared marker", limit=2, offset=2)
+    third = store.search_session_messages("shared marker", limit=2, offset=4)
+
+    first_ids = [item["id"] for item in first]
+    second_ids = [item["id"] for item in second]
+    third_ids = [item["id"] for item in third]
+
+    assert len(first_ids) == 2
+    assert len(second_ids) == 2
+    assert len(third_ids) == 1
+    assert len(set(first_ids + second_ids + third_ids)) == 5
+
+
+def test_session_search_rejects_negative_offset_with_empty_results(tmp_path: Path):
+    store = TaskStore(tmp_path / "session-search-negative-offset.sqlite3")
+    session = store.create_session("Negative offset")
+    store.add_session_message(session["id"], "user", "shared marker")
+
+    assert store.search_session_messages("shared marker", offset=-1) == []

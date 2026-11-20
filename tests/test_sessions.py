@@ -50,3 +50,20 @@ def test_memory_search_request_rejects_whitespace_only_query():
 
     with pytest.raises(ValidationError, match="query must not be blank"):
         MemorySearchRequest(query="   \n\t")
+
+
+def test_session_search_request_accepts_bounded_offset():
+    from crows.app import SessionSearchRequest
+
+    request = SessionSearchRequest(query="project Crows", limit=10, offset=20)
+
+    assert request.offset == 20
+
+
+def test_session_search_request_rejects_offset_above_maximum():
+    import pytest
+    from pydantic import ValidationError
+    from crows.app import SessionSearchRequest
+
+    with pytest.raises(ValidationError):
+        SessionSearchRequest(query="project Crows", offset=100_001)
