@@ -67,3 +67,49 @@ def test_session_search_request_rejects_offset_above_maximum():
 
     with pytest.raises(ValidationError):
         SessionSearchRequest(query="project Crows", offset=100_001)
+
+def test_session_search_endpoint_returns_requested_page_metadata(monkeypatch):
+    import crows.app as app_module
+    from crows.app import SessionSearchRequest
+
+    class SearchStore:
+        def search_session_messages(self, query, *, limit, offset):
+            assert query == "Crows memory"
+            assert limit == 2
+            assert offset == 4
+            return [
+                {"id": "message-5", "session_id": "session-a", "content": "Crows memory result 5"},
+                {"id": "message-6", "session_id": "session-b", "content": "Crows memory result 6"},
+            ]
+
+    monkeypatch.setattr(app_module, "store", SearchStore())
+    response = app_module.search_sessions(
+        SessionSearchRequest(query="Crows memory", limit=2, offset=4)
+    )
+
+    assert response == {
+        "messages": [
+            {"id": "message-5", "session_id": "session-a", "content": "Crows memory result 5"},
+            {"id": "message-6", "session_id": "session-b", "content": "Crows memory result 6"},
+        ],
+        "limit": 2,
+        "offset": 4,
+    }
+
+
+def test_session_search_endpoint_returns_empty_page_at_end(monkeypatch):
+    import crows.app as app_module
+    from crows.app import SessionSearchRequest
+
+    class SearchStore:
+        def search_session_messages(self, query, *, limit, offset):
+            assert offset == 20
+            return []
+
+    monkeypatch.setattr(app_module, "store", SearchStore())
+    response = app_module.search_sessions(
+        SessionSearchRequest(query="Crows", limit=20, offset=20)
+    )
+
+    assert response == {"messages": [], "limit": 20, "offset": 20}
+
