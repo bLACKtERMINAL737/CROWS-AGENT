@@ -667,3 +667,137 @@ async def test_recovery_preview_accepts_legacy_plan_default_role(
     assert preview["recovery_order"] == [0]
     assert preview["execution_started"] is False
     assert preview["state_mutated"] is False
+
+@pytest.mark.asyncio
+async def test_recovery_http_resumes_queued_checkpoint_without_replaying_unknown(
+    tmp_path, monkeypatch
+):
+    store = TaskStore(tmp_path / "workflow-recovery-http.sqlite3")
+    queued = store.create_task("[research] Queued task", "Safe checkpointed work")
+    uncertain = store.create_task("[research] Uncertain task", "May have acted already")
+    store.set_task_status(uncertain["id"], "unknown", error="simulated interruption")
+    workflow = store.create_workflow(
+        "Recover only known-safe work",
+        [
+            {"title": "Queued task", "input": "Safe checkpointed work", "role": "research"},
+            {"title": "Uncertain task", "input": "May have acted already", "role": "research"},
+        ],
+    )
+    checkpoint = {
+        "tasks": [
+            {
+                "plan_index": 0,
+                "task_id": queued["id"],
+                "title": "Queued task",
+                "role": "research",
+                "status": "queued",
+                "depends_on": [],
+            },
+            {
+                "plan_index": 1,
+                "task_id": uncertain["id"],
+                "title": "Uncertain task",
+                "role": "research",
+                "status": "unknown",
+                "depends_on": [],
+            },
+        ],
+        "qa_review": None,
+    }
+    store.update_workflow(
+        workflow["id"], "unknown", results=checkpoint,
+        error="simulated process interruption",
+    )
+    executed = []
+
+    async def fake_run(task_id):
+        assert task_id == queued["id"]
+        assert store.claim_task(task_id)
+        store.set_task_status(task_id, "succeeded", result={"answer": "verified"})
+        executed.append(task_id)
+        return {
+            "task_id": task_id,
+            "status": "succeeded",
+            "result": "verified",
+            "tool_calls": 0,
+            "tool_attempts": 0,
+        }
+
+    monkeypatch.setattr(app_module, "store", store)
+    monkeypatch.setattr(app_module, "run_agent_task", fake_run)
+    monkeypatch.setenv("CROWS_API_TOKEN", API_TOKEN)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_isolated_app()),
+        base_url="http://127.0.0.1:8000",
+        headers={"X-Crows-Token": API_TOKEN},
+    ) as client:
+        response = await client.post(
+            f"/agents/workflows/{workflow['id']}/recover"
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "partial"
+    assert executed == [queued["id"]]
+    assert store.get_task(queued["id"])["status"] == "succeeded"
+    assert store.get_task(uncertain["id"])["status"] == "unknown"
+    saved = store.get_workflow(workflow["id"])
+    assert saved["status"] == "partial"
+    assert [item["status"] for item in saved["results"]["tasks"]] == [
+        "succeeded", "unknown"
+    ]
+    audit = store.list_workflow_recovery_audit(workflow["id"])
+    assert [item["event_type"] for item in audit["events"]] == [
+        "completed", "started"
+    ]
+    assert audit["events"][0]["attempt_id"] == audit["events"][1]["attempt_id"]
+
+
+@pytest.mark.asyncio
+async def test_recovery_http_rejects_non_unknown_workflow_without_execution(
+    tmp_path, monkeypatch
+):
+    store = TaskStore(tmp_path / "workflow-recovery-http-conflict.sqlite3")
+    task = store.create_task("[research] Queued task", "Must not execute")
+    workflow = store.create_workflow(
+        "Already active",
+        [{"title": "Queued task", "input": "Must not execute", "role": "research"}],
+    )
+    store.update_workflow(
+        workflow["id"],
+        "running",
+        results={
+            "tasks": [{
+                "plan_index": 0,
+                "task_id": task["id"],
+                "title": "Queued task",
+                "role": "research",
+                "status": "queued",
+                "depends_on": [],
+            }],
+            "qa_review": None,
+        },
+    )
+    monkeypatch.setattr(app_module, "store", store)
+    monkeypatch.setenv("CROWS_API_TOKEN", API_TOKEN)
+
+    async def should_not_run(_task_id):
+        pytest.fail("A running workflow must not enter recovery")
+
+    monkeypatch.setattr(app_module, "run_agent_task", should_not_run)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_isolated_app()),
+        base_url="http://127.0.0.1:8000",
+        headers={"X-Crows-Token": API_TOKEN},
+    ) as client:
+        response = await client.post(
+            f"/agents/workflows/{workflow['id']}/recover"
+        )
+
+    assert response.status_code == 409
+    assert store.get_workflow(workflow["id"])["status"] == "running"
+    assert store.get_task(task["id"])["status"] == "queued"
+    assert store.list_workflow_recovery_audit(workflow["id"])["events"] == []
+
