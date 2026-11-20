@@ -1335,3 +1335,13 @@ def test_session_search_matches_bengali_and_latin_tokens_case_insensitively(tmp_
 
     assert len(results) == 1
     assert results[0]["content"] == "প্রজেক্ট CROWS-এর API প্রস্তুত।"
+
+
+def test_session_search_requires_all_query_terms(tmp_path: Path):
+    store = TaskStore(tmp_path / "session-search-all-terms.sqlite3")
+    session = store.create_session("Partial term match")
+    store.add_session_message(
+        session["id"], "user", "আজকের আবহাওয়া বেশ সুন্দর Crows"
+    )
+
+    assert store.search_session_messages("প্রজেক্টের Crows") == []
