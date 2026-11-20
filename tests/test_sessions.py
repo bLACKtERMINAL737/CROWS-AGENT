@@ -32,3 +32,21 @@ def test_session_rejects_invalid_role(tmp_path):
         assert 'role' in str(exc).lower()
     else:
         raise AssertionError('Invalid message role should be rejected')
+
+
+def test_session_search_request_rejects_whitespace_only_query():
+    import pytest
+    from pydantic import ValidationError
+    from crows.app import SessionSearchRequest
+
+    with pytest.raises(ValidationError, match="query must not be blank"):
+        SessionSearchRequest(query="   \n\t")
+
+
+def test_memory_search_request_rejects_whitespace_only_query():
+    import pytest
+    from pydantic import ValidationError
+    from crows.app import MemorySearchRequest
+
+    with pytest.raises(ValidationError, match="query must not be blank"):
+        MemorySearchRequest(query="   \n\t")
