@@ -113,3 +113,94 @@ def test_session_search_endpoint_returns_empty_page_at_end(monkeypatch):
 
     assert response == {"messages": [], "limit": 20, "offset": 20}
 
+@pytest.mark.asyncio
+async def test_session_search_http_returns_real_sqlite_pages_without_gaps(
+    tmp_path, monkeypatch
+):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from crows import app as app_module
+    from crows.security import LocalAPIProtection
+
+    api_token = "crows-session-search-http-token"
+    store = TaskStore(tmp_path / "session-search-http.sqlite3")
+    first_session = store.create_session("First conversation")
+    second_session = store.create_session("Second conversation")
+    for index in range(3):
+        store.add_session_message(
+            first_session["id"], "user", f"shared Crows marker first {index}"
+        )
+    for index in range(2):
+        store.add_session_message(
+            second_session["id"], "assistant", f"shared Crows marker second {index}"
+        )
+
+    isolated = FastAPI()
+    isolated.router.routes = list(app_module.app.router.routes)
+    isolated.add_middleware(LocalAPIProtection)
+    monkeypatch.setattr(app_module, "store", store)
+    monkeypatch.setenv("CROWS_API_TOKEN", api_token)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=isolated),
+        base_url="http://127.0.0.1:8000",
+        headers={"X-Crows-Token": api_token},
+    ) as client:
+        pages = []
+        for offset in (0, 2, 4):
+            response = await client.post(
+                "/sessions/search",
+                json={"query": "shared Crows marker", "limit": 2, "offset": offset},
+            )
+            assert response.status_code == 200
+            pages.append(response.json())
+
+    assert [len(page["messages"]) for page in pages] == [2, 2, 1]
+    paged_ids = [
+        message["id"]
+        for page in pages
+        for message in page["messages"]
+    ]
+    expected_ids = [
+        message["id"]
+        for message in store.search_session_messages(
+            "shared Crows marker", limit=10
+        )
+    ]
+    assert paged_ids == expected_ids
+    assert [page["offset"] for page in pages] == [0, 2, 4]
+    assert all(page["limit"] == 2 for page in pages)
+    assert {message["session_id"] for page in pages for message in page["messages"]} == {
+        first_session["id"], second_session["id"]
+    }
+
+
+@pytest.mark.asyncio
+async def test_session_search_http_rejects_out_of_range_offset(
+    tmp_path, monkeypatch
+):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from crows import app as app_module
+    from crows.security import LocalAPIProtection
+
+    api_token = "crows-session-search-http-token"
+    store = TaskStore(tmp_path / "session-search-http-invalid.sqlite3")
+    isolated = FastAPI()
+    isolated.router.routes = list(app_module.app.router.routes)
+    isolated.add_middleware(LocalAPIProtection)
+    monkeypatch.setattr(app_module, "store", store)
+    monkeypatch.setenv("CROWS_API_TOKEN", api_token)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=isolated),
+        base_url="http://127.0.0.1:8000",
+        headers={"X-Crows-Token": api_token},
+    ) as client:
+        response = await client.post(
+            "/sessions/search",
+            json={"query": "Crows", "limit": 20, "offset": 100_001},
+        )
+
+    assert response.status_code == 422
+
