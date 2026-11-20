@@ -1304,3 +1304,44 @@ def test_update_memory_normalizes_text_and_tags_before_reindexing(tmp_path: Path
     assert updated["tags"] == ["runtime", "agent"]
     assert store.search_memories("old") == []
     assert [item["id"] for item in store.search_memories("runtime")] == [memory["id"]]
+
+
+def test_session_search_finds_bengali_words_across_sessions(tmp_path: Path):
+    store = TaskStore(tmp_path / "bengali-session-search.sqlite3")
+    first = store.create_session("বাংলা আলোচনা")
+    second = store.create_session("অন্য আলোচনা")
+    store.add_session_message(
+        first["id"], "user", "আমার প্রজেক্টের নাম Crows এবং এটি local-first agent।"
+    )
+    store.add_session_message(
+        second["id"], "user", "আজকের আবহাওয়া বেশ সুন্দর।"
+    )
+
+    results = store.search_session_messages("প্রজেক্টের Crows")
+
+    assert len(results) == 1
+    assert results[0]["session_id"] == first["id"]
+    assert results[0]["role"] == "user"
+
+
+def test_session_search_matches_bengali_and_latin_tokens_case_insensitively(tmp_path: Path):
+    store = TaskStore(tmp_path / "mixed-session-search.sqlite3")
+    session = store.create_session("Mixed language search")
+    store.add_session_message(
+        session["id"], "assistant", "প্রজেক্ট CROWS-এর API প্রস্তুত।"
+    )
+
+    results = store.search_session_messages("প্রজেক্ট crows API")
+
+    assert len(results) == 1
+    assert results[0]["content"] == "প্রজেক্ট CROWS-এর API প্রস্তুত।"
+
+
+def test_session_search_requires_all_query_terms(tmp_path: Path):
+    store = TaskStore(tmp_path / "session-search-all-terms.sqlite3")
+    session = store.create_session("Partial term match")
+    store.add_session_message(
+        session["id"], "user", "আজকের আবহাওয়া বেশ সুন্দর Crows"
+    )
+
+    assert store.search_session_messages("প্রজেক্টের Crows") == []

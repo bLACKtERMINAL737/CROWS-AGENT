@@ -1776,12 +1776,13 @@ class TaskStore:
                 "  CROSS JOIN session_message_search_terms AS indexed "
                 "    INDEXED BY idx_session_message_search_terms_term "
                 "  WHERE indexed.term = query.term "
-                "  GROUP BY indexed.message_id"
+                "  GROUP BY indexed.message_id "
+                "  HAVING COUNT(*) = ?"
                 ") AS matches "
                 "JOIN session_messages AS m ON m.id = matches.message_id "
                 "JOIN sessions AS s ON s.id = m.session_id "
                 "ORDER BY matches.score DESC, m.created_at DESC LIMIT ?",
-                (limit,),
+                (len(terms), limit),
             ).fetchall()
         return [dict(row) for row in rows]
 
