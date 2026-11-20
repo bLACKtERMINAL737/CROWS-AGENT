@@ -571,7 +571,7 @@ async function runSessionSearch(nextOffset=0){
  const generation=++sessionSearchGeneration;
  const query=$("sessionSearchQuery").value.trim();
  const results=$("sessionSearchResults");
- if(!query){sessionSearchQuery="";sessionSearchOffset=0;results.replaceChildren();$("sessionSearchStatus").textContent="Enter words to search across saved conversations."; $("sessionSearchPrev").disabled=true;$("sessionSearchNext").disabled=true;return;}
+ if(!query){sessionSearchQuery="";sessionSearchOffset=0;results.replaceChildren();$("sessionSearchStatus").textContent="Enter words to search across saved conversations."; $("sessionSearchPrev").disabled=true;$("sessionSearchNext").disabled=true;$("sessionSearchSubmit").disabled=false;return;}
  sessionSearchQuery=query;sessionSearchOffset=nextOffset;
  $("sessionSearchSubmit").disabled=true;$("sessionSearchPrev").disabled=true;$("sessionSearchNext").disabled=true;
  $("sessionSearchStatus").textContent="Searching saved conversations…";results.replaceChildren();
@@ -605,6 +605,13 @@ async function runSessionSearch(nextOffset=0){
  }catch(e){if(generation===sessionSearchGeneration)$("sessionSearchStatus").textContent="Search failed: "+e.message;}
  finally{if(generation===sessionSearchGeneration)$("sessionSearchSubmit").disabled=false;}
 }
+$("sessionSearchQuery").addEventListener("input",()=>{
+ sessionSearchGeneration++;
+ $("sessionSearchSubmit").disabled=false;
+ $("sessionSearchPrev").disabled=true;$("sessionSearchNext").disabled=true;
+ $("sessionSearchResults").replaceChildren();
+ $("sessionSearchStatus").textContent="Press Search conversations to search the updated query.";
+});
 $("sessionSearchForm").addEventListener("submit",event=>{event.preventDefault();runSessionSearch(0);});
 $("sessionSearchPrev").addEventListener("click",()=>runSessionSearch(Math.max(0,sessionSearchOffset-SESSION_SEARCH_PAGE_SIZE)));
 $("sessionSearchNext").addEventListener("click",()=>runSessionSearch(sessionSearchOffset+SESSION_SEARCH_PAGE_SIZE));
