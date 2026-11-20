@@ -1751,9 +1751,11 @@ class TaskStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def search_session_messages(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
+    def search_session_messages(
+        self, query: str, limit: int = 20, offset: int = 0
+    ) -> list[dict[str, Any]]:
         """Search message text through the Unicode-normalized token index."""
-        if limit <= 0:
+        if limit <= 0 or offset < 0:
             return []
         terms = sorted(_memory_search_tokens(query))
         if not terms:
@@ -1781,8 +1783,8 @@ class TaskStore:
                 ") AS matches "
                 "JOIN session_messages AS m ON m.id = matches.message_id "
                 "JOIN sessions AS s ON s.id = m.session_id "
-                "ORDER BY matches.score DESC, m.created_at DESC LIMIT ?",
-                (len(terms), limit),
+                "ORDER BY matches.score DESC, m.created_at DESC, m.id DESC LIMIT ? OFFSET ?",
+                (len(terms), limit, offset),
             ).fetchall()
         return [dict(row) for row in rows]
 
