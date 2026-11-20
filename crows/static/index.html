@@ -566,7 +566,9 @@ function renderChatMessages(messages){
 let sessionSearchOffset=0;
 const SESSION_SEARCH_PAGE_SIZE=20;
 let sessionSearchQuery="";
+let sessionSearchGeneration=0;
 async function runSessionSearch(nextOffset=0){
+ const generation=++sessionSearchGeneration;
  const query=$("sessionSearchQuery").value.trim();
  const results=$("sessionSearchResults");
  if(!query){sessionSearchQuery="";sessionSearchOffset=0;results.replaceChildren();$("sessionSearchStatus").textContent="Enter words to search across saved conversations."; $("sessionSearchPrev").disabled=true;$("sessionSearchNext").disabled=true;return;}
@@ -575,6 +577,7 @@ async function runSessionSearch(nextOffset=0){
  $("sessionSearchStatus").textContent="Searching saved conversations…";results.replaceChildren();
  try{
   const data=await api("/sessions/search",{method:"POST",body:JSON.stringify({query,limit:SESSION_SEARCH_PAGE_SIZE,offset:sessionSearchOffset})});
+  if(generation!==sessionSearchGeneration || query!==$("sessionSearchQuery").value.trim())return;
   const messages=data.messages||[];
   if(!messages.length){
    $("sessionSearchStatus").textContent=sessionSearchOffset?"No more results.":"No matching messages found.";
@@ -599,8 +602,8 @@ async function runSessionSearch(nextOffset=0){
   }
   $("sessionSearchPrev").disabled=sessionSearchOffset===0;
   $("sessionSearchNext").disabled=messages.length<SESSION_SEARCH_PAGE_SIZE;
- }catch(e){$("sessionSearchStatus").textContent="Search failed: "+e.message;}
- finally{$("sessionSearchSubmit").disabled=false;}
+ }catch(e){if(generation===sessionSearchGeneration)$("sessionSearchStatus").textContent="Search failed: "+e.message;}
+ finally{if(generation===sessionSearchGeneration)$("sessionSearchSubmit").disabled=false;}
 }
 $("sessionSearchForm").addEventListener("submit",event=>{event.preventDefault();runSessionSearch(0);});
 $("sessionSearchPrev").addEventListener("click",()=>runSessionSearch(Math.max(0,sessionSearchOffset-SESSION_SEARCH_PAGE_SIZE)));
