@@ -1373,3 +1373,34 @@ def test_session_search_rejects_negative_offset_with_empty_results(tmp_path: Pat
     store.add_session_message(session["id"], "user", "shared marker")
 
     assert store.search_session_messages("shared marker", offset=-1) == []
+
+def test_session_search_pagination_is_stable_when_timestamps_tie(tmp_path: Path):
+    store = TaskStore(tmp_path / "session-search-tied-timestamps.sqlite3")
+    session = store.create_session("Tied timestamps")
+    for index in range(5):
+        store.add_session_message(
+            session["id"], "user", f"shared marker tied item {index}"
+        )
+
+    with store.connect() as con:
+        con.execute(
+            "UPDATE session_messages SET created_at=? WHERE session_id=?",
+            ("2026-11-20T00:00:00+00:00", session["id"]),
+        )
+
+    all_results = store.search_session_messages("shared marker", limit=10)
+    first_page = store.search_session_messages("shared marker", limit=2, offset=0)
+    second_page = store.search_session_messages("shared marker", limit=2, offset=2)
+    third_page = store.search_session_messages("shared marker", limit=2, offset=4)
+
+    expected_ids = [item["id"] for item in all_results]
+    paged_ids = [
+        item["id"]
+        for page in (first_page, second_page, third_page)
+        for item in page
+    ]
+
+    assert len(expected_ids) == 5
+    assert expected_ids == sorted(expected_ids, reverse=True)
+    assert paged_ids == expected_ids
+
