@@ -887,9 +887,21 @@ async def run_agent_task_with_worker_lease(task_id: str, worker_id: str) -> None
             if not task.done():
                 task.cancel()
         await asyncio.gather(heartbeat, execution, return_exceptions=True)
+        lease_lost = (
+            isinstance(exc, RuntimeError)
+            and str(exc) == "Agent task lease ownership was lost during execution"
+        )
+        terminal_status = "unknown" if lease_lost else "failed"
+        error_text = (
+            "Agent task lease ownership was lost during execution; inspect tool journals before recovery."
+            if lease_lost
+            else f"Agent worker execution failed ({type(exc).__name__}); inspect task journal."
+        )
+        # Finalize only if this worker still owns a live lease. If ownership
+        # has already moved, the expired-lease reconciler is responsible for
+        # marking the task unknown; a stale worker must not overwrite it.
         store.finish_task_lease(
-            task_id, worker_id, "failed",
-            error=f"Agent worker execution failed ({type(exc).__name__}); inspect task journal.",
+            task_id, worker_id, terminal_status, error=error_text,
         )
         logger.warning("Durable agent task %s did not complete: %s", task_id, type(exc).__name__)
     finally:
