@@ -75,7 +75,7 @@ async def test_unexpected_recovery_error_persists_interruption_and_audit(
     saved = store.get_workflow(workflow["id"])
     assert saved["status"] == "unknown"
     assert saved["results"]["tasks"][0]["status"] == "unknown"
-    assert "unexpectedly" in saved["error"]
+    assert "unexpectedly" in saved["error_text"]
     audit = store.list_workflow_recovery_audit(workflow["id"])
     assert {event["event_type"] for event in audit["events"]} == {
         "started",
