@@ -190,3 +190,42 @@ async def test_lease_renewal_failure_cancels_in_flight_task(monkeypatch):
 
     assert started.is_set()
     assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_lease_renewal_failure_marks_scheduled_task_unknown(monkeypatch, tmp_path):
+    class LostLeaseStore:
+        def renew_claim(self, *_args, **_kwargs):
+            return False
+
+    tasks = TaskStore(tmp_path / "lease-loss-tasks.sqlite3")
+    task = tasks.create_task("[research] Lease loss", "Inspect uncertain work")
+    assert tasks.claim_task(task["id"])
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def fake_sleep(_seconds):
+        await started.wait()
+
+    async def long_running_task(_task_id):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(app_module, "scheduler_store", LostLeaseStore())
+    monkeypatch.setattr(app_module, "store", tasks)
+    monkeypatch.setattr(app_module, "run_agent_task", long_running_task)
+    monkeypatch.setattr(app_module.asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(RuntimeError, match="lease ownership was lost"):
+        await app_module.run_agent_task_with_lease_renewal(
+            task["id"], "schedule-1", "worker-1"
+        )
+
+    saved = tasks.get_task(task["id"])
+    assert started.is_set()
+    assert cancelled.is_set()
+    assert saved["status"] == "unknown"
+    assert "lease ownership was lost" in saved["error_text"]
