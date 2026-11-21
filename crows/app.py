@@ -816,9 +816,26 @@ async def run_agent_task_with_lease_renewal(task_id: str, schedule_id: str, work
         )
         if heartbeat in done:
             # A failed renewal means this worker no longer has authority to
-            # continue dispatching. Stop local execution and leave the outcome
-            # uncertain for explicit reconciliation.
-            heartbeat.result()
+            # continue dispatching. Stop local execution and preserve an
+            # explicit unknown task state; cancellation alone does not update
+            # the task journal for this scheduler-owned execution path.
+            try:
+                heartbeat.result()
+            except Exception:
+                if not execution.done():
+                    execution.cancel()
+                await asyncio.gather(execution, return_exceptions=True)
+                saved = store.get_task(task_id)
+                if saved and saved["status"] in {"queued", "running"}:
+                    store.set_task_status(
+                        task_id,
+                        "unknown",
+                        error=(
+                            "Scheduler lease ownership was lost during execution; "
+                            "inspect task and tool journals before recovery."
+                        ),
+                    )
+                raise
             await execution
         else:
             await execution
