@@ -498,6 +498,19 @@ class MessagingStore:
             if (lease is None or lease["lease_owner"] != worker_id
                     or lease["lease_until"] < now):
                 return "lease_lost"
+            message = con.execute(
+                "SELECT status FROM messaging_messages WHERE id=? AND direction='outbound'",
+                (message_id,),
+            ).fetchone()
+            if message is None or message["status"] != "accepted":
+                # A legacy/status-reconciliation path may have finalized the
+                # message while its worker lease still exists. Never schedule
+                # another provider attempt for a terminal delivery.
+                con.execute(
+                    "DELETE FROM messaging_delivery_leases WHERE message_id=? AND lease_owner=?",
+                    (message_id, worker_id),
+                )
+                return "lease_lost"
             existing = con.execute(
                 "SELECT retry_count, max_retries FROM messaging_delivery_retries WHERE message_id=?",
                 (message_id,),
