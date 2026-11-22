@@ -146,3 +146,37 @@ async def test_worker_lease_loss_marks_task_unknown_not_failed(monkeypatch, tmp_
     assert saved["status"] == "unknown"
     assert saved["lease_owner"] is None
     assert "lease ownership was lost" in saved["error_text"]
+
+
+@pytest.mark.asyncio
+async def test_worker_timeout_marks_task_unknown_not_failed(monkeypatch, tmp_path):
+    store = TaskStore(tmp_path / "agent-worker-timeout.sqlite3")
+    task = store.create_task("[research] Timed out", "Tool result may be uncertain")
+    claimed = store.claim_next_task("timeout-worker", lease_seconds=120)
+    assert claimed["id"] == task["id"]
+    monkeypatch.setattr(app_module, "store", store)
+    monkeypatch.setattr(app_module, "agent_task_timeout_seconds", lambda: 0.01)
+    started = asyncio.Event()
+    real_sleep = asyncio.sleep
+
+    async def fake_sleep(_seconds):
+        await started.wait()
+        # Keep the heartbeat pending until the execution timeout cancels it.
+        await real_sleep(3600)
+
+    async def blocking_runner(task_id, *, worker_id):
+        assert store.owns_task_lease(task_id, worker_id)
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(app_module, "_run_agent_task_unlimited", blocking_runner)
+    monkeypatch.setattr(app_module.asyncio, "sleep", fake_sleep)
+
+    await app_module.run_agent_task_with_worker_lease(
+        task["id"], "timeout-worker"
+    )
+
+    saved = store.get_task(task["id"])
+    assert saved["status"] == "unknown"
+    assert saved["lease_owner"] is None
+    assert "timed out" in saved["error_text"]
