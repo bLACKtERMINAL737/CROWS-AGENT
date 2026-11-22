@@ -806,9 +806,27 @@ async def run_agent_task_with_lease_renewal(task_id: str, schedule_id: str, work
             if not renewed:
                 raise RuntimeError("Scheduler lease ownership was lost during execution")
 
-    execution = asyncio.create_task(
-        asyncio.wait_for(run_agent_task(task_id), timeout=agent_task_timeout_seconds())
-    )
+    async def execute_with_timeout_safety() -> None:
+        try:
+            await asyncio.wait_for(
+                run_agent_task(task_id), timeout=agent_task_timeout_seconds()
+            )
+        except asyncio.TimeoutError:
+            # wait_for cancels the specialist coroutine on timeout. Its tool
+            # call may already have had an external effect, so never leave the
+            # task looking active or classify the outcome as a safe failure.
+            saved = store.get_task(task_id)
+            if saved and saved["status"] in {"queued", "running"}:
+                store.set_task_status(
+                    task_id,
+                    "unknown",
+                    error=(
+                        "Scheduled specialist execution timed out; inspect task and tool journals before recovery."
+                    ),
+                )
+            raise
+
+    execution = asyncio.create_task(execute_with_timeout_safety())
     heartbeat = asyncio.create_task(renew_while_running())
     try:
         done, _ = await asyncio.wait(
