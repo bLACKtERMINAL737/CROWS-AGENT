@@ -137,10 +137,18 @@ class SchedulerStore:
         due = _utc(run_at)
         if (recurrence_interval_seconds is None) != (max_occurrences is None):
             raise ValueError("recurrence_interval_seconds and max_occurrences must be supplied together")
-        if recurrence_interval_seconds is not None and not 60 <= recurrence_interval_seconds <= 31_536_000:
-            raise ValueError("recurrence_interval_seconds must be between 60 and 31536000")
-        if max_occurrences is not None and not 2 <= max_occurrences <= 1000:
-            raise ValueError("max_occurrences must be between 2 and 1000")
+        if recurrence_interval_seconds is not None and (
+            isinstance(recurrence_interval_seconds, bool)
+            or not isinstance(recurrence_interval_seconds, int)
+            or not 60 <= recurrence_interval_seconds <= 31_536_000
+        ):
+            raise ValueError("recurrence_interval_seconds must be an integer between 60 and 31536000")
+        if max_occurrences is not None and (
+            isinstance(max_occurrences, bool)
+            or not isinstance(max_occurrences, int)
+            or not 2 <= max_occurrences <= 1000
+        ):
+            raise ValueError("max_occurrences must be an integer between 2 and 1000")
         now, schedule_id = datetime.now(timezone.utc).isoformat(), str(uuid4())
         with self.connect() as con:
             con.execute("BEGIN IMMEDIATE")
