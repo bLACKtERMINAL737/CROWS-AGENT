@@ -7,6 +7,8 @@ leases become unknown and are never replayed automatically.
 from __future__ import annotations
 
 import sqlite3
+
+from .sqlite_connection import ClosingSQLiteConnection
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -61,7 +63,7 @@ class InboundDispatchStore:
                 )
 
     def connect(self) -> sqlite3.Connection:
-        con = sqlite3.connect(self.db_path, timeout=10)
+        con = sqlite3.connect(self.db_path, timeout=10, factory=ClosingSQLiteConnection)
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA foreign_keys=ON")
         con.execute("PRAGMA busy_timeout=10000")
