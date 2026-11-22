@@ -397,3 +397,65 @@ async def test_tool_router_can_fallback_when_transport_fails_before_any_tool_exe
     assert primary.calls == 1
     assert fallback.calls == 1
     assert executed == []
+
+class SequencedToolRouterProvider:
+    def __init__(self, model, outcomes):
+        self.model = model
+        self.configured = True
+        self.outcomes = list(outcomes)
+        self.calls = 0
+
+    async def chat_with_tools(self, message, task_type="general", **kwargs):
+        self.calls += 1
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return {"answer": f"{self.model}: {message}", "tool_calls": 0}
+
+
+@pytest.mark.asyncio
+async def test_native_tool_router_retries_transient_failure_within_route_budget(monkeypatch):
+    async def fake_sleep(_delay):
+        return None
+
+    monkeypatch.setattr("crows.provider.asyncio.sleep", fake_sleep)
+    primary = SequencedToolRouterProvider(
+        "primary",
+        [httpx.ConnectError("temporary connection failure"), {"ok": True}],
+    )
+    fallback = SequencedToolRouterProvider("fallback", [{"ok": True}])
+    router = ModelRouter(primary, fallback=fallback, max_attempts=2, max_total_attempts=3)
+
+    result = await router.chat_with_tools("inspect workspace", tool_specs=[])
+
+    assert result["answer"] == "primary: inspect workspace"
+    assert result["route"] == "primary"
+    assert result["fallback_used"] is False
+    assert result["attempts"] == 2
+    assert result["attempt_history"] == [
+        {"route": "primary", "attempt": 1, "outcome": "failure", "error_type": "ConnectError"},
+        {"route": "primary", "attempt": 2, "outcome": "success"},
+    ]
+    assert primary.calls == 2
+    assert fallback.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_native_tool_router_total_budget_prevents_fallback_when_exhausted(monkeypatch):
+    async def fake_sleep(_delay):
+        return None
+
+    monkeypatch.setattr("crows.provider.asyncio.sleep", fake_sleep)
+    primary = SequencedToolRouterProvider(
+        "primary",
+        [httpx.ConnectError("first failure"), httpx.ConnectError("second failure")],
+    )
+    fallback = SequencedToolRouterProvider("fallback", [{"ok": True}])
+    router = ModelRouter(primary, fallback=fallback, max_attempts=2, max_total_attempts=1)
+
+    with pytest.raises(httpx.ConnectError, match="first failure"):
+        await router.chat_with_tools("inspect workspace", tool_specs=[])
+
+    assert primary.calls == 1
+    assert fallback.calls == 0
+
