@@ -459,3 +459,30 @@ async def test_native_tool_router_total_budget_prevents_fallback_when_exhausted(
     assert primary.calls == 1
     assert fallback.calls == 0
 
+
+
+@pytest.mark.asyncio
+async def test_tool_callback_attempt_blocks_retry_without_external_execution_counter():
+    primary = ToolAwareFakeProvider(
+        "primary",
+        error=httpx.ConnectError("connection dropped after tool callback"),
+        execute_before_error=True,
+    )
+    fallback = ToolAwareFakeProvider("fallback")
+    executed = []
+
+    async def execute_tool(name, arguments):
+        executed.append((name, arguments))
+        return {"ok": True}
+
+    router = ModelRouter(primary, fallback=fallback, max_attempts=2)
+    with pytest.raises(httpx.ConnectError, match="connection dropped"):
+        await router.chat_with_tools(
+            "Read known_facts.txt",
+            tool_specs=[{"type": "function", "function": {"name": "workspace__read_file"}}],
+            execute_tool=execute_tool,
+        )
+
+    assert executed == [("workspace__read_file", {"path": "known_facts.txt"})]
+    assert primary.calls == 1
+    assert fallback.calls == 0
