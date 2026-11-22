@@ -55,6 +55,37 @@ def test_cancel_only_affects_pending_schedules(tmp_path: Path):
     assert store.get_schedule(item["id"])["status"] == "cancelled"
 
 
+def test_scheduler_claim_and_renew_reject_boolean_or_wrongly_typed_limits(tmp_path: Path):
+    store = SchedulerStore(tmp_path / "strict-lease-validation.sqlite3")
+    due = store.create_schedule(
+        "Due", "Run", "2026-01-01T00:00:00+00:00", "strict-lease-validation"
+    )
+
+    for kwargs in (
+        {"lease_seconds": True},
+        {"lease_seconds": "30"},
+        {"limit": True},
+        {"limit": "2"},
+    ):
+        with pytest.raises(ValueError):
+            store.claim_due("worker-a", now="2026-01-02T00:00:00+00:00", **kwargs)
+
+    for worker_id in (None, 1, True):
+        with pytest.raises(ValueError, match="worker_id"):
+            store.claim_due(worker_id, now="2026-01-02T00:00:00+00:00")
+
+    claimed = store.claim_due(
+        "worker-a", now="2026-01-02T00:00:00+00:00", lease_seconds=30
+    )
+    assert len(claimed) == 1
+    for lease_seconds in (True, "30", 0, 3601):
+        with pytest.raises(ValueError, match="lease_seconds"):
+            store.renew_claim(
+                due["id"], "worker-a", now="2026-01-02T00:00:01+00:00",
+                lease_seconds=lease_seconds,
+            )
+
+
 def test_schedule_rejects_naive_timestamps_and_invalid_limits(tmp_path: Path):
     store = SchedulerStore(tmp_path / "scheduler.sqlite3")
     with pytest.raises(ValueError, match="timezone"):

@@ -342,10 +342,17 @@ class SchedulerStore:
 
     def claim_due(self, worker_id: str, *, now: str | datetime | None = None,
                   lease_seconds: int = 60, limit: int = 10) -> list[dict[str, Any]]:
+        if not isinstance(worker_id, str):
+            raise ValueError("worker_id must be a string")
         worker_id = worker_id.strip()
         if not worker_id or len(worker_id) > 200:
             raise ValueError("worker_id must be non-blank and at most 200 characters")
-        if not 1 <= lease_seconds <= 3600 or not 1 <= limit <= 100:
+        if (
+            isinstance(lease_seconds, bool) or not isinstance(lease_seconds, int)
+            or not 1 <= lease_seconds <= 3600
+            or isinstance(limit, bool) or not isinstance(limit, int)
+            or not 1 <= limit <= 100
+        ):
             raise ValueError("lease_seconds or limit is outside its allowed range")
         instant = _utc(now or datetime.now(timezone.utc))
         expires = (datetime.fromisoformat(instant) + timedelta(seconds=lease_seconds)).isoformat()
@@ -391,8 +398,11 @@ class SchedulerStore:
                     lease_seconds: int = 300,
                     now: str | datetime | None = None) -> bool:
         """Extend an active lease only while its current owner still holds it."""
-        if not 1 <= lease_seconds <= 3600:
-            raise ValueError("lease_seconds must be between 1 and 3600")
+        if (
+            isinstance(lease_seconds, bool) or not isinstance(lease_seconds, int)
+            or not 1 <= lease_seconds <= 3600
+        ):
+            raise ValueError("lease_seconds must be an integer between 1 and 3600")
         instant = _utc(now or datetime.now(timezone.utc))
         expires = (datetime.fromisoformat(instant) + timedelta(seconds=lease_seconds)).isoformat()
         with self.connect() as con:
