@@ -157,9 +157,12 @@ async def test_worker_timeout_marks_task_unknown_not_failed(monkeypatch, tmp_pat
     monkeypatch.setattr(app_module, "store", store)
     monkeypatch.setattr(app_module, "agent_task_timeout_seconds", lambda: 0.01)
     started = asyncio.Event()
+    real_sleep = asyncio.sleep
 
     async def fake_sleep(_seconds):
         await started.wait()
+        # Keep the heartbeat pending until the execution timeout cancels it.
+        await real_sleep(3600)
 
     async def blocking_runner(task_id, *, worker_id):
         assert store.owns_task_lease(task_id, worker_id)
