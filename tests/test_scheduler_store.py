@@ -467,6 +467,26 @@ def test_recurring_schedule_stops_at_occurrence_limit_and_preserves_history(tmp_
     assert len(store.list_execution_history(item["id"])) == 2
 
 
+def test_recurring_schedule_rejects_boolean_float_and_string_limits(tmp_path):
+    store = SchedulerStore(tmp_path / "recurring-strict-types.sqlite3")
+    due = "2026-01-01T00:00:00+00:00"
+    invalid_intervals = (True, 3600.0, "3600")
+    for index, interval in enumerate(invalid_intervals):
+        with pytest.raises(ValueError, match="recurrence_interval_seconds"):
+            store.create_schedule(
+                "Recurring", "Run", due, f"bad-interval-{index}",
+                recurrence_interval_seconds=interval, max_occurrences=2,
+            )
+
+    invalid_maximums = (True, 3.0, "3")
+    for index, maximum in enumerate(invalid_maximums):
+        with pytest.raises(ValueError, match="max_occurrences"):
+            store.create_schedule(
+                "Recurring", "Run", due, f"bad-maximum-{index}",
+                recurrence_interval_seconds=3600, max_occurrences=maximum,
+            )
+
+
 def test_recurring_schedule_requires_both_fields_and_bounded_values(tmp_path):
     store = SchedulerStore(tmp_path / "recurring-validation.sqlite3")
     with pytest.raises(ValueError, match="supplied together"):
