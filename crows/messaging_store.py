@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from .config import get_env
 from .messaging import MAX_ID_CHARS, MAX_TEXT_CHARS, MessagingContractError, conversation_scope
+from .sqlite_connection import ClosingSQLiteConnection
 
 _CHANNEL_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _CONVERSATION_RE = re.compile(r"^msg_[a-f0-9]{40}$")
@@ -115,7 +116,7 @@ class MessagingStore:
                 raise ValueError("CROWS_MESSAGING_TARGET_KEY must be a valid Fernet key") from exc
 
     def connect(self) -> sqlite3.Connection:
-        con = sqlite3.connect(self.db_path, timeout=10)
+        con = sqlite3.connect(self.db_path, timeout=10, factory=ClosingSQLiteConnection)
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA foreign_keys=ON")
         con.execute("PRAGMA busy_timeout=10000")
