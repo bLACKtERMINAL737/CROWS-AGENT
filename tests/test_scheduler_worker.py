@@ -229,3 +229,32 @@ async def test_lease_renewal_failure_marks_scheduled_task_unknown(monkeypatch, t
     assert cancelled.is_set()
     assert saved["status"] == "unknown"
     assert "lease ownership was lost" in saved["error_text"]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_execution_timeout_marks_task_unknown(monkeypatch, tmp_path):
+    scheduler = SchedulerStore(tmp_path / "scheduler-timeout.sqlite3")
+    tasks = TaskStore(tmp_path / "tasks-timeout.sqlite3")
+    task = tasks.create_task("[research] Timeout task", "May have external effects")
+    assert tasks.claim_task(task["id"])
+    monkeypatch.setattr(app_module, "scheduler_store", scheduler)
+    monkeypatch.setattr(app_module, "store", tasks)
+    monkeypatch.setattr(app_module, "agent_task_timeout_seconds", lambda: 0.01)
+
+    async def fake_sleep(_seconds):
+        await asyncio.Event().wait()
+
+    async def slow_runner(_task_id):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(app_module, "run_agent_task", slow_runner)
+    monkeypatch.setattr(app_module.asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(asyncio.TimeoutError):
+        await app_module.run_agent_task_with_lease_renewal(
+            task["id"], "schedule-timeout", "worker-timeout"
+        )
+
+    saved = tasks.get_task(task["id"])
+    assert saved["status"] == "unknown"
+    assert "timed out" in saved["error_text"]
