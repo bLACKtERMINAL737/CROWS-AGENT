@@ -154,6 +154,20 @@ def test_expired_lease_cannot_be_revived_by_renewal_or_finished(tmp_path):
     assert dispatch.get(route["id"])["state"] == "processing"
 
 
+def test_dispatch_without_reply_cannot_be_requeued_as_pending(tmp_path):
+    dispatch, route = _queued(tmp_path)
+    dispatch.claim(worker_id="worker-a", limit=1)
+
+    assert dispatch.finish(
+        route["id"], worker_id="worker-a", state="pending",
+        diagnostic="No durable reply checkpoint exists.",
+    ) is False
+    saved = dispatch.get(route["id"])
+    assert saved["state"] == "processing"
+    assert saved["reply_text"] is None
+    assert saved["lease_owner"] == "worker-a"
+
+
 def test_checkpointed_reply_is_immutable_for_a_dispatch(tmp_path):
     dispatch, route = _queued(tmp_path)
     dispatch.claim(worker_id="worker-a", limit=1)
