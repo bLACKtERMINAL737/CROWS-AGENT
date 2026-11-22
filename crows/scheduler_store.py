@@ -5,6 +5,8 @@ execute tasks; callers must apply the agent's normal authorization and approval
 policy before dispatching a claimed item.
 """
 import sqlite3
+
+from .sqlite_connection import ClosingSQLiteConnection
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
@@ -115,7 +117,7 @@ class SchedulerStore:
             )
 
     def connect(self) -> sqlite3.Connection:
-        con = sqlite3.connect(self.db_path, timeout=10, isolation_level=None)
+        con = sqlite3.connect(self.db_path, timeout=10, isolation_level=None, factory=ClosingSQLiteConnection)
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA busy_timeout=10000")
         con.execute("PRAGMA foreign_keys=ON")
