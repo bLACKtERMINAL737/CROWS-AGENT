@@ -823,6 +823,39 @@ async def test_tool_chat_rejects_malformed_completion_envelopes(monkeypatch, pay
 
 
 @pytest.mark.asyncio
+async def test_zero_tool_call_budget_never_sends_tools_or_executes_callbacks(monkeypatch):
+    calls = []
+    responses = [completion(content="I can answer without tools.")]
+    monkeypatch.setattr(
+        "crows.provider.httpx.AsyncClient",
+        lambda *_args, **_kwargs: FakeAsyncClient(responses, calls),
+    )
+    provider = ModelProvider("https://example.test/v1", "secret", "test-model")
+    executed = []
+
+    async def execute(name, args):
+        executed.append((name, args))
+        return {"ok": True}
+
+    specs = [{
+        "type": "function",
+        "function": {
+            "name": "workspace.list_files",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }]
+    result = await provider.chat_with_tools(
+        "List files", tool_specs=specs, execute_tool=execute, max_tool_calls=0
+    )
+
+    assert result == {"answer": "I can answer without tools.", "tool_calls": 0}
+    assert len(calls) == 1
+    assert "tools" not in calls[0]["json"]
+    assert "tool_choice" not in calls[0]["json"]
+    assert executed == []
+
+
+@pytest.mark.asyncio
 async def test_provider_tool_call_batch_over_five_is_rejected_before_execution(monkeypatch):
     calls = []
     tool_calls = [
