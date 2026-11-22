@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from .file_lock import file_lock
 from .memory_search import MEMORY_SEARCH_RECALL_SQL, MEMORY_SEARCH_SQL
+from .sqlite_connection import ClosingSQLiteConnection
 
 STATUSES = {"queued", "running", "succeeded", "failed", "unknown"}
 
@@ -79,7 +80,7 @@ class TaskStore:
             os.close(fd)
 
     def connect(self) -> sqlite3.Connection:
-        con = sqlite3.connect(self.db_path, timeout=10)
+        con = sqlite3.connect(self.db_path, timeout=10, factory=ClosingSQLiteConnection)
         con.row_factory = sqlite3.Row
         # SQLite's built-in lower() is ASCII-only unless built with ICU.
         # Register Python casefold so cross-session search handles Unicode
