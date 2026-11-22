@@ -909,10 +909,13 @@ async def run_agent_task_with_worker_lease(task_id: str, worker_id: str) -> None
             isinstance(exc, RuntimeError)
             and str(exc) == "Agent task lease ownership was lost during execution"
         )
-        terminal_status = "unknown" if lease_lost else "failed"
+        timed_out = isinstance(exc, asyncio.TimeoutError)
+        terminal_status = "unknown" if lease_lost or timed_out else "failed"
         error_text = (
             "Agent task lease ownership was lost during execution; inspect tool journals before recovery."
             if lease_lost
+            else "Agent task execution timed out; inspect tool journals before recovery."
+            if timed_out
             else f"Agent worker execution failed ({type(exc).__name__}); inspect task journal."
         )
         # Finalize only if this worker still owns a live lease. If ownership
