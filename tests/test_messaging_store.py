@@ -256,6 +256,34 @@ def test_retry_rejects_boolean_and_non_integer_limits(tmp_path: Path, monkeypatc
         store.retry_outbound_lease(queued["message"]["id"], worker_id="worker", **params)
 
 
+def test_rate_limit_retry_refuses_message_already_finalized(tmp_path: Path, monkeypatch):
+    from cryptography.fernet import Fernet
+
+    monkeypatch.setenv("CROWS_MESSAGING_TARGET_KEY", Fernet.generate_key().decode())
+    store = MessagingStore(tmp_path / "retry-terminal.sqlite3")
+    queued = store.queue_outbound(
+        channel="telegram", provider_user_id="u", text="hello",
+        idempotency_key="retry-terminal", delivery_target="123",
+    )
+    message_id = queued["message"]["id"]
+    store.claim_outbound(worker_id="worker-a")
+    # Simulate a concurrent/manual status path finalizing the row.
+    store.update_outbound_status("telegram", "retry-terminal", "sent")
+
+    assert store.retry_outbound_lease(
+        message_id, worker_id="worker-a", delay_seconds=5,
+    ) == "lease_lost"
+    with store.connect() as con:
+        assert con.execute(
+            "SELECT COUNT(*) FROM messaging_delivery_retries WHERE message_id=?",
+            (message_id,),
+        ).fetchone()[0] == 0
+        assert con.execute(
+            "SELECT COUNT(*) FROM messaging_delivery_leases WHERE message_id=?",
+            (message_id,),
+        ).fetchone()[0] == 0
+
+
 def test_rate_limit_retry_is_delayed_and_bounded(tmp_path: Path, monkeypatch):
     from cryptography.fernet import Fernet
     from datetime import datetime, timedelta, timezone
