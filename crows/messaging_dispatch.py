@@ -200,6 +200,10 @@ class InboundDispatchStore:
             if (row is None or row["lease_owner"] != worker_id
                     or not row["lease_until"] or row["lease_until"] < now):
                 return False
+            # A dispatch may return to pending only when a durable reply exists.
+            # Otherwise a retry could repeat a model call whose outcome is uncertain.
+            if state == "pending" and not row["reply_text"]:
+                return False
             # Re-check wall-clock expiry in the write predicate as well:
             # a lease can expire after the initial read but before this update.
             finished_at = _now()
