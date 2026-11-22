@@ -530,6 +530,17 @@ class ModelRouter:
         last_error: Exception | None = None
         attempts = 0
         attempt_history: list[dict[str, str | int]] = []
+        # Track callback entry internally: callers may omit execution_counter,
+        # but a retry after a tool attempt can duplicate an external side effect.
+        tool_execution_attempts = 0
+        routed_execute_tool = execute_tool
+        if execute_tool is not None:
+            async def tracked_execute_tool(*args, **kwargs):
+                nonlocal tool_execution_attempts
+                tool_execution_attempts += 1
+                return await execute_tool(*args, **kwargs)
+
+            routed_execute_tool = tracked_execute_tool
         for provider, provider_route in candidates:
             for attempt in range(self.max_attempts):
                 if attempts >= self.max_total_attempts:
@@ -538,7 +549,7 @@ class ModelRouter:
                 try:
                     result = await provider.chat_with_tools(
                         message, task_type, history=history, memories=memories,
-                        tool_specs=tool_specs, execute_tool=execute_tool,
+                        tool_specs=tool_specs, execute_tool=routed_execute_tool,
                         max_tool_calls=max_tool_calls,
                         image_data_url=image_data_url,
                         runtime_context=runtime_context,
@@ -559,7 +570,9 @@ class ModelRouter:
                         "Model request failed on route %s (attempt %s/%s): %s",
                         provider_route, attempts, self.max_total_attempts, type(exc).__name__,
                     )
-                    if execution_counter is not None and execution_counter():
+                    if tool_execution_attempts or (
+                        execution_counter is not None and execution_counter()
+                    ):
                         raise
                     if not _retryable(exc) or attempt + 1 >= self.max_attempts:
                         break
