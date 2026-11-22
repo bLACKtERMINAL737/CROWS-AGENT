@@ -850,8 +850,8 @@ async def test_zero_tool_call_budget_never_sends_tools_or_executes_callbacks(mon
 
     assert result == {"answer": "I can answer without tools.", "tool_calls": 0}
     assert len(calls) == 1
-    assert "tools" not in calls[0]["json"]
-    assert "tool_choice" not in calls[0]["json"]
+    assert "tools" not in calls[0]["payload"]
+    assert "tool_choice" not in calls[0]["payload"]
     assert executed == []
 
 
