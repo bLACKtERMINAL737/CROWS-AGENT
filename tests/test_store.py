@@ -1425,3 +1425,27 @@ def test_workflow_health_rejects_non_integer_limits(tmp_path: Path):
         else:
             raise AssertionError("invalid workflow health limit must be rejected")
 
+
+
+
+def test_task_listing_rejects_non_integer_or_unbounded_limits(tmp_path: Path):
+    store = TaskStore(tmp_path / "task-list-strict-pagination.sqlite3")
+    store.create_task("one", "first")
+
+    for invalid in (True, 1.0, "1", 0, -1, 1001):
+        with pytest.raises(ValueError, match="limit must be an integer"):
+            store.list_tasks(limit=invalid)
+
+
+def test_session_message_search_rejects_non_integer_or_unbounded_pagination(tmp_path: Path):
+    store = TaskStore(tmp_path / "session-search-strict-pagination.sqlite3")
+    session = store.create_session("Strict pagination")
+    store.add_session_message(session["id"], "user", "shared marker")
+
+    for invalid_limit in (True, 1.0, "1", 0, 201):
+        with pytest.raises(ValueError, match="limit and offset"):
+            store.search_session_messages("shared marker", limit=invalid_limit)
+
+    for invalid_offset in (True, 1.0, "1", -1, 1_000_001):
+        with pytest.raises(ValueError, match="limit and offset"):
+            store.search_session_messages("shared marker", offset=invalid_offset)
