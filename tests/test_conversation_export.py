@@ -106,3 +106,27 @@ def test_conversation_export_rejects_invalid_offset():
         app_module.export_sessions(offset=-1)
 
     assert exc.value.status_code == 400
+
+
+
+def test_conversation_export_rejects_aggregate_content_over_budget(monkeypatch):
+    from fastapi import HTTPException
+    import pytest
+
+    session = {"id": "large-content-session"}
+    messages = [
+        {"id": str(index), "content": "x" * 100_000}
+        for index in range(161)
+    ]
+    monkeypatch.setattr(app_module.store, "list_sessions", lambda limit, offset=0: [session])
+    monkeypatch.setattr(app_module.store, "get_session", lambda session_id: dict(session))
+    monkeypatch.setattr(
+        app_module.store,
+        "list_session_messages",
+        lambda session_id, limit: messages,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        app_module.export_sessions(limit=1)
+
+    assert exc.value.status_code == 413
