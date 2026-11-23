@@ -416,6 +416,53 @@ class MemoryUpdateRequest(BaseModel):
     tags: list[str] | None = Field(default=None, max_length=20)
 
 
+class MemoryImportItem(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    id: str = Field(min_length=1, max_length=128)
+    category: str = Field(min_length=1, max_length=80)
+    content: str = Field(min_length=1, max_length=4_000)
+    source: str = Field(min_length=1, max_length=100)
+    tags: list[str] = Field(default_factory=list, max_length=20)
+    created_at: str = Field(min_length=1, max_length=64)
+    updated_at: str = Field(min_length=1, max_length=64)
+
+    @field_validator("id", "category", "content", "source")
+    @classmethod
+    def validate_non_blank_import_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("imported memory text fields must not be blank")
+        return value
+
+    @field_validator("tags")
+    @classmethod
+    def validate_import_tags(cls, value: list[str]) -> list[str]:
+        cleaned = [tag.strip() for tag in value]
+        if any(not tag or len(tag) > 80 for tag in cleaned):
+            raise ValueError("memory tags must be non-blank and at most 80 characters")
+        return cleaned
+
+    @field_validator("created_at", "updated_at")
+    @classmethod
+    def validate_import_timestamp(cls, value: str) -> str:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("memory timestamps must be valid ISO-8601 values") from exc
+        if parsed.tzinfo is None:
+            raise ValueError("memory timestamps must include a timezone")
+        return parsed.astimezone(timezone.utc).isoformat()
+
+
+class MemoryImportRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    format: Literal["crows-memory-export"]
+    version: Literal[1]
+    memories: list[MemoryImportItem] = Field(max_length=10_000)
+
+
 class MemorySearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=300)
     limit: int = Field(default=20, ge=1, le=100)
@@ -4104,6 +4151,14 @@ def export_memories():
         "version": 1,
         "memories": store.list_memories(limit=10000),
     }
+
+
+@app.post("/memory/import")
+def import_memories(request: MemoryImportRequest):
+    """Restore a versioned Crows memory archive without overwriting local entries."""
+    return store.import_memories(
+        [item.model_dump() for item in request.memories]
+    )
 
 
 @app.post("/memory/search")
