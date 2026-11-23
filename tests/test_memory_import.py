@@ -37,16 +37,22 @@ def test_memory_import_restores_records_and_search_index(tmp_path):
 
 def test_memory_import_is_idempotent_and_never_overwrites_existing_records(tmp_path):
     store = TaskStore(tmp_path / "memory-import-idempotent.sqlite3")
-    store.add_memory("local", "keep local value", source="user", tags=["local"])
+    local = store.add_memory("local", "keep local value", source="user", tags=["local"])
 
-    archive_record = memory_record(memory_id="local-memory", content="archive value")
-    store.import_memories([archive_record])
-    result = store.import_memories([
+    collision = memory_record(memory_id=local["id"], content="attempted overwrite")
+    collision_result = store.import_memories([collision])
+    assert collision_result == {"imported": 0, "skipped": 1}
+    assert store.get_memory(local["id"])["content"] == "keep local value"
+
+    archive_record = memory_record(memory_id="archive-memory-2", content="archive value")
+    first_result = store.import_memories([archive_record])
+    retry_result = store.import_memories([
         {**archive_record, "content": "attempted overwrite"}
     ])
 
-    assert result == {"imported": 0, "skipped": 1}
-    assert store.get_memory("local-memory")["content"] == "archive value"
+    assert first_result == {"imported": 1, "skipped": 0}
+    assert retry_result == {"imported": 0, "skipped": 1}
+    assert store.get_memory("archive-memory-2")["content"] == "archive value"
 
 
 def test_memory_import_endpoint_returns_import_and_skip_counts(monkeypatch, tmp_path):
