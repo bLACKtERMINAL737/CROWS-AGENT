@@ -209,8 +209,8 @@ Session endpoints:
 - `GET /sessions` — list sessions
 - `GET /sessions/{session_id}` — retrieve a session and its messages
 - `POST /sessions/search` — search session messages across conversations with bounded pagination (`query`, `limit` 1–100, `offset` 0–100,000); every query term must match. Results use deterministic ordering so clients can request subsequent pages without loading the full history.
-- `GET /sessions/export?limit=100&offset=0` — export a page of up to 1,000 recent sessions in a versioned JSON archive (`aether-conversation-export`, version 1). Each session is capped at 10,000 messages and each archive at 50,000 messages; use `offset` and a smaller `limit` to export large histories in restorable pages. Oversized pages are rejected rather than silently truncated. Treat exported files as private conversation data.
-- `POST /sessions/import` — restore an `aether-conversation-export` version 1 archive. Existing session IDs or message ID collisions skip the entire affected session; successful sessions and their messages are restored atomically, and the message search index is rebuilt. The endpoint requires the local API token; treat archive files as private conversation data.
+- `GET /sessions/export?limit=100&offset=0` — export a page of up to 1,000 recent sessions in a versioned JSON archive (`aether-conversation-export`, version 1). Each session is capped at 10,000 messages, each archive at 50,000 messages, and aggregate message content at 16 million characters; use `offset` and a smaller `limit` to export large histories in restorable pages. Oversized pages are rejected rather than silently truncated. Treat exported files as private conversation data.
+- `POST /sessions/import` — restore an `aether-conversation-export` version 1 archive, capped at 1,000 sessions, 50,000 messages, 10,000 messages per session, and 16 million aggregate message-content characters. Existing session IDs or message ID collisions skip the entire affected session; successful sessions and their messages are restored atomically, and the message search index is rebuilt. The endpoint requires the local API token; treat archive files as private conversation data.
 - `DELETE /sessions/{session_id}` — delete a session and its messages
 - `POST /chat` — chat with optional `session_id`, `task_type`, and `use_saved_memories` (default `false`)
 
@@ -221,8 +221,8 @@ Memory endpoints:
 - `GET /memory?limit=100&category=preference` — list memories
 - `POST /memory/search` — search saved records by keywords
 - `DELETE /memory/{memory_id}` — delete a saved record
-- `GET /memory/export` — export saved records as a versioned JSON document (`format: crows-memory-export`, `version: 1`) for local backup or migration. The export contains memory content and metadata; keep the downloaded file private.
-- `POST /memory/import` — restore a `crows-memory-export` version 1 JSON document. Existing memory IDs are skipped rather than overwritten; each import is atomic, preserves original IDs/timestamps, and rebuilds the local keyword-search index. The endpoint is protected by the local API token; validate and keep archive files private.
+- `GET /memory/export` — export saved records as a versioned JSON document (`format: crows-memory-export`, `version: 1`) for local backup or migration. The export is capped at 10,000 records and 16 million aggregate content characters; keep the downloaded file private.
+- `POST /memory/import` — restore a `crows-memory-export` version 1 JSON document, capped at 10,000 records and 16 million aggregate content characters. Existing memory IDs are skipped rather than overwritten; each import is atomic, preserves original IDs/timestamps, and rebuilds the local keyword-search index. The endpoint is protected by the local API token; validate and keep archive files private.
 
 Memory is explicit and local; the application does not silently infer or save memories from chats.
 
