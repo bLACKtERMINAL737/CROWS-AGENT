@@ -32,3 +32,20 @@ def test_memory_export_route_is_read_only_get():
 
     assert len(matching_routes) == 1
     assert matching_routes[0].methods == {"GET"}
+
+
+
+def test_memory_export_rejects_aggregate_content_over_budget(monkeypatch):
+    from fastapi import HTTPException
+    import pytest
+
+    memories = [
+        {"id": f"large-memory-{index}", "content": "x" * 4_000}
+        for index in range(4_001)
+    ]
+    monkeypatch.setattr(app_module.store, "list_memories", lambda limit: memories)
+
+    with pytest.raises(HTTPException) as exc:
+        app_module.export_memories()
+
+    assert exc.value.status_code == 413
