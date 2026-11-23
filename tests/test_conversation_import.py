@@ -18,12 +18,14 @@ def archive_session(*, session_id="archive-session-1", message_id="archive-messa
         "messages": [
             {
                 "id": message_id,
+                "session_id": session_id,
                 "role": "user",
                 "content": "Crows archive restore searchable marker",
                 "created_at": created,
             },
             {
                 "id": message_id + "-assistant",
+                "session_id": session_id,
                 "role": "assistant",
                 "content": "Conversation restored successfully",
                 "created_at": updated,
