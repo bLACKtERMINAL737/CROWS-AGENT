@@ -297,8 +297,11 @@ class SchedulerStore:
         reason = reason.strip()
         if not reason or len(reason) > 2000:
             raise ValueError("retry reason is required and must be at most 2000 characters")
-        if not 1 <= max_retries <= 10:
-            raise ValueError("max_retries must be between 1 and 10")
+        if (
+            isinstance(max_retries, bool) or not isinstance(max_retries, int)
+            or not 1 <= max_retries <= 10
+        ):
+            raise ValueError("max_retries must be an integer between 1 and 10")
         now, audit_id = datetime.now(timezone.utc).isoformat(), str(uuid4())
         with self.connect() as con:
             con.execute("BEGIN IMMEDIATE")
@@ -333,8 +336,13 @@ class SchedulerStore:
     def list_retry_audit(
         self, schedule_id: str, *, limit: int = 50, offset: int = 0,
     ) -> list[dict[str, Any]]:
-        if not 1 <= limit <= 200 or not 0 <= offset <= 1_000_000:
-            raise ValueError("limit or offset is outside its allowed range")
+        if (
+            isinstance(limit, bool) or not isinstance(limit, int)
+            or not 1 <= limit <= 200
+            or isinstance(offset, bool) or not isinstance(offset, int)
+            or not 0 <= offset <= 1_000_000
+        ):
+            raise ValueError("limit or offset must be integers within their allowed ranges")
         with self.connect() as con:
             if con.execute(
                 "SELECT 1 FROM scheduled_tasks WHERE id=?", (schedule_id,)
