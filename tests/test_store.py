@@ -1442,10 +1442,20 @@ def test_session_message_search_rejects_non_integer_or_unbounded_pagination(tmp_
     session = store.create_session("Strict pagination")
     store.add_session_message(session["id"], "user", "shared marker")
 
-    for invalid_limit in (True, 1.0, "1", 0, 201):
-        with pytest.raises(ValueError, match="limit and offset"):
+    for invalid_limit in (True, 1.0, "1"):
+        with pytest.raises(ValueError, match="limit and offset must be integers"):
             store.search_session_messages("shared marker", limit=invalid_limit)
 
-    for invalid_offset in (True, 1.0, "1", -1, 1_000_001):
-        with pytest.raises(ValueError, match="limit and offset"):
+    for invalid_offset in (True, 1.0, "1"):
+        with pytest.raises(ValueError, match="limit and offset must be integers"):
             store.search_session_messages("shared marker", offset=invalid_offset)
+
+    for invalid_limit in (201, 1_000):
+        with pytest.raises(ValueError, match="exceed their allowed ranges"):
+            store.search_session_messages("shared marker", limit=invalid_limit)
+    with pytest.raises(ValueError, match="exceed their allowed ranges"):
+        store.search_session_messages("shared marker", offset=1_000_001)
+
+    assert store.search_session_messages("shared marker", limit=0) == []
+    assert store.search_session_messages("shared marker", limit=-1) == []
+    assert store.search_session_messages("shared marker", offset=-1) == []
