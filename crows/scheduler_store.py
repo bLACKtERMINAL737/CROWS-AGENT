@@ -184,8 +184,8 @@ class SchedulerStore:
         self, limit: int = 50, *, status: str | None = None,
         paused: bool | None = None, overdue_before: str | datetime | None = None,
     ) -> list[dict[str, Any]]:
-        if not 1 <= limit <= 200:
-            raise ValueError("limit must be between 1 and 200")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
+            raise ValueError("limit must be an integer between 1 and 200")
         if status is not None and status not in SCHEDULE_STATUSES:
             raise ValueError("invalid schedule status")
         clauses: list[str] = []
@@ -486,8 +486,13 @@ class SchedulerStore:
     def list_execution_history(
         self, schedule_id: str, *, limit: int = 50, offset: int = 0,
     ) -> list[dict[str, Any]]:
-        if not 1 <= limit <= 200 or not 0 <= offset <= 1_000_000:
-            raise ValueError("limit or offset is outside its allowed range")
+        if (
+            isinstance(limit, bool) or not isinstance(limit, int)
+            or not 1 <= limit <= 200
+            or isinstance(offset, bool) or not isinstance(offset, int)
+            or not 0 <= offset <= 1_000_000
+        ):
+            raise ValueError("limit or offset must be integers within their allowed ranges")
         with self.connect() as con:
             if con.execute("SELECT 1 FROM scheduled_tasks WHERE id=?", (schedule_id,)).fetchone() is None:
                 raise KeyError("Schedule not found")
@@ -526,8 +531,13 @@ class SchedulerStore:
     def list_reconciliation_audit(
         self, schedule_id: str, *, limit: int = 50, offset: int = 0,
     ) -> list[dict[str, Any]]:
-        if not 1 <= limit <= 200 or not 0 <= offset <= 1_000_000:
-            raise ValueError("limit or offset is outside its allowed range")
+        if (
+            isinstance(limit, bool) or not isinstance(limit, int)
+            or not 1 <= limit <= 200
+            or isinstance(offset, bool) or not isinstance(offset, int)
+            or not 0 <= offset <= 1_000_000
+        ):
+            raise ValueError("limit or offset must be integers within their allowed ranges")
         with self.connect() as con:
             if con.execute("SELECT 1 FROM scheduled_tasks WHERE id=?", (schedule_id,)).fetchone() is None:
                 raise KeyError("Schedule not found")
