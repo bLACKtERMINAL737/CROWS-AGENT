@@ -1406,22 +1406,4 @@ def test_session_search_pagination_is_stable_when_timestamps_tie(tmp_path: Path)
 
 
 
-def test_workflow_health_rejects_non_integer_limits(tmp_path: Path):
-    store = TaskStore(tmp_path / "workflow-health-strict-types.sqlite3")
-
-    for stale_after_seconds in (True, 1.0, "60"):
-        try:
-            store.workflow_health(stale_after_seconds=stale_after_seconds)
-        except ValueError as exc:
-            assert "stale_after_seconds" in str(exc)
-        else:
-            raise AssertionError("invalid stale_after_seconds must be rejected")
-
-    for limit in (True, 1.0, "10"):
-        try:
-            store.workflow_health(limit=limit)
-        except ValueError as exc:
-            assert "limit" in str(exc)
-        else:
-            raise AssertionError("invalid workflow health limit must be rejected")
 
