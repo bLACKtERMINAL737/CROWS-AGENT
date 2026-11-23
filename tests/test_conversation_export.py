@@ -78,7 +78,7 @@ def test_conversation_export_rejects_archive_over_50000_messages(monkeypatch):
     import pytest
 
     sessions = [{"id": f"session-{index}"} for index in range(6)]
-    messages = [{"id": str(index)} for index in range(10_000)]
+    messages = [{"id": str(index), "content": ""} for index in range(10_000)]
     monkeypatch.setattr(app_module.store, "list_sessions", lambda limit, offset=0: sessions)
     monkeypatch.setattr(
         app_module.store,
