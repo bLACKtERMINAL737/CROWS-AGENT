@@ -443,6 +443,89 @@ class SessionSearchRequest(BaseModel):
         return value
 
 
+class ConversationImportMessage(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    id: str = Field(min_length=1, max_length=128)
+    role: Literal["user", "assistant", "system"]
+    content: str = Field(max_length=100_000)
+    created_at: str = Field(min_length=1, max_length=64)
+
+    @field_validator("id")
+    @classmethod
+    def validate_message_id(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("message id must not be blank")
+        return value
+
+    @field_validator("created_at")
+    @classmethod
+    def validate_message_timestamp(cls, value: str) -> str:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("message timestamp must be valid ISO-8601") from exc
+        if parsed.tzinfo is None:
+            raise ValueError("message timestamp must include a timezone")
+        return parsed.astimezone(timezone.utc).isoformat()
+
+
+class ConversationImportSession(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    id: str = Field(min_length=1, max_length=128)
+    title: str = Field(min_length=1, max_length=120)
+    created_at: str = Field(min_length=1, max_length=64)
+    updated_at: str = Field(min_length=1, max_length=64)
+    messages: list[ConversationImportMessage] = Field(max_length=10_000)
+
+    @field_validator("id", "title")
+    @classmethod
+    def validate_session_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("session id and title must not be blank")
+        return value
+
+    @field_validator("created_at", "updated_at")
+    @classmethod
+    def validate_session_timestamp(cls, value: str) -> str:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("session timestamp must be valid ISO-8601") from exc
+        if parsed.tzinfo is None:
+            raise ValueError("session timestamp must include a timezone")
+        return parsed.astimezone(timezone.utc).isoformat()
+
+
+class ConversationImportRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    format: Literal["aether-conversation-export"]
+    version: Literal[1]
+    sessions: list[ConversationImportSession] = Field(max_length=1_000)
+
+    @field_validator("sessions")
+    @classmethod
+    def validate_archive_limits(
+        cls, value: list[ConversationImportSession]
+    ) -> list[ConversationImportSession]:
+        total_messages = sum(len(session.messages) for session in value)
+        if total_messages > 50_000:
+            raise ValueError("conversation archive exceeds 50,000 messages")
+        session_ids = [session.id for session in value]
+        if len(session_ids) != len(set(session_ids)):
+            raise ValueError("conversation archive contains duplicate session IDs")
+        message_ids = [
+            message.id for session in value for message in session.messages
+        ]
+        if len(message_ids) != len(set(message_ids)):
+            raise ValueError("conversation archive contains duplicate message IDs")
+        return value
+
+
 def _telegram_config():
     bot_token = get_env("CROWS_TELEGRAM_BOT_TOKEN", "").strip()
     webhook_secret = get_env("CROWS_TELEGRAM_WEBHOOK_SECRET", "").strip()
@@ -4166,6 +4249,14 @@ def export_sessions(limit: int = 100):
         "version": 1,
         "sessions": archive,
     }
+
+
+@app.post("/sessions/import")
+def import_sessions(request: ConversationImportRequest):
+    """Restore a versioned conversation archive without replacing local sessions."""
+    return store.import_sessions(
+        [session.model_dump() for session in request.sessions]
+    )
 
 
 @app.get("/sessions/{session_id}")
