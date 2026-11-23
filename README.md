@@ -209,7 +209,7 @@ Session endpoints:
 - `GET /sessions` — list sessions
 - `GET /sessions/{session_id}` — retrieve a session and its messages
 - `POST /sessions/search` — search session messages across conversations with bounded pagination (`query`, `limit` 1–100, `offset` 0–100,000); every query term must match. Results use deterministic ordering so clients can request subsequent pages without loading the full history.
-- `GET /sessions/export?limit=100` — export up to 1,000 recent sessions with up to 10,000 messages per session in a versioned JSON archive (`crows-conversation-export`, version 1). Treat exported files as private conversation data.
+- `GET /sessions/export?limit=100` — export up to 1,000 recent sessions with up to 10,000 messages per session in a versioned JSON archive (`aether-conversation-export`, version 1 (the legacy identifier is retained for export compatibility)). Treat exported files as private conversation data.
 - `DELETE /sessions/{session_id}` — delete a session and its messages
 - `POST /chat` — chat with optional `session_id`, `task_type`, and `use_saved_memories` (default `false`)
 
