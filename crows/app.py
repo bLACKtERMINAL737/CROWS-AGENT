@@ -4294,17 +4294,32 @@ def list_sessions(limit: int = 50):
 
 
 @app.get("/sessions/export")
-def export_sessions(limit: int = 100):
-    """Export local conversation sessions and their messages as versioned JSON."""
+def export_sessions(limit: int = 100, offset: int = 0):
+    """Export a bounded page of sessions that can be restored as one archive."""
     if not 1 <= limit <= 1000:
         raise HTTPException(status_code=400, detail="limit must be between 1 and 1000")
-    sessions = store.list_sessions(limit=limit)
+    if not 0 <= offset <= 1_000_000:
+        raise HTTPException(status_code=400, detail="offset must be between 0 and 1000000")
+    sessions = store.list_sessions(limit=limit, offset=offset)
     archive = []
+    total_messages = 0
     for session in sessions:
         session_data = store.get_session(session["id"])
         if session_data is None:
             continue
-        session_data["messages"] = store.list_session_messages(session["id"], limit=10000)
+        messages = store.list_session_messages(session["id"], limit=10_001)
+        if len(messages) > 10_000:
+            raise HTTPException(
+                status_code=413,
+                detail="A session exceeds the 10000-message export limit; archive smaller sessions separately",
+            )
+        total_messages += len(messages)
+        if total_messages > 50_000:
+            raise HTTPException(
+                status_code=413,
+                detail="Archive exceeds 50000 messages; reduce limit or use offset to export smaller pages",
+            )
+        session_data["messages"] = messages
         archive.append(session_data)
     return {
         "format": "aether-conversation-export",
