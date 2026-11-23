@@ -209,7 +209,8 @@ Session endpoints:
 - `GET /sessions` — list sessions
 - `GET /sessions/{session_id}` — retrieve a session and its messages
 - `POST /sessions/search` — search session messages across conversations with bounded pagination (`query`, `limit` 1–100, `offset` 0–100,000); every query term must match. Results use deterministic ordering so clients can request subsequent pages without loading the full history.
-- `GET /sessions/export?limit=100` — export up to 1,000 recent sessions with up to 10,000 messages per session in a versioned JSON archive (`aether-conversation-export`, version 1 (the legacy identifier is retained for export compatibility)). Treat exported files as private conversation data.
+- `GET /sessions/export?limit=100&offset=0` — export a page of up to 1,000 recent sessions in a versioned JSON archive (`aether-conversation-export`, version 1). Each session is capped at 10,000 messages and each archive at 50,000 messages; use `offset` and a smaller `limit` to export large histories in restorable pages. Oversized pages are rejected rather than silently truncated. Treat exported files as private conversation data.
+- `POST /sessions/import` — restore an `aether-conversation-export` version 1 archive. Existing session IDs or message ID collisions skip the entire affected session; successful sessions and their messages are restored atomically, and the message search index is rebuilt. The endpoint requires the local API token; treat archive files as private conversation data.
 - `DELETE /sessions/{session_id}` — delete a session and its messages
 - `POST /chat` — chat with optional `session_id`, `task_type`, and `use_saved_memories` (default `false`)
 
