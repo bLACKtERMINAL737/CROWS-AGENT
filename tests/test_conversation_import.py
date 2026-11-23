@@ -121,7 +121,14 @@ def test_conversation_import_request_rejects_invalid_format_and_naive_timestamp(
 
 def test_conversation_import_request_rejects_duplicate_ids_and_extra_fields():
     archive = archive_session()
-    duplicate = {**archive, "id": "archive-session-2"}
+    duplicate = {
+        **archive,
+        "id": "archive-session-2",
+        "messages": [
+            {**message, "session_id": "archive-session-2"}
+            for message in archive["messages"]
+        ],
+    }
 
     with pytest.raises(ValidationError):
         app_module.ConversationImportRequest(
@@ -153,3 +160,13 @@ def test_conversation_import_endpoint_returns_restore_counts(monkeypatch, tmp_pa
         "imported_messages": 2,
         "skipped_sessions": 0,
     }
+
+
+def test_conversation_import_request_rejects_message_from_another_session():
+    archive = archive_session()
+    archive["messages"][0]["session_id"] = "different-session"
+
+    with pytest.raises(ValidationError):
+        app_module.ConversationImportRequest(
+            format="aether-conversation-export", version=1, sessions=[archive]
+        )
