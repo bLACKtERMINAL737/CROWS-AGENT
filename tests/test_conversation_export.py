@@ -95,3 +95,14 @@ def test_conversation_export_rejects_archive_over_50000_messages(monkeypatch):
         app_module.export_sessions(limit=6)
 
     assert exc.value.status_code == 413
+
+
+
+def test_conversation_export_rejects_invalid_offset():
+    from fastapi import HTTPException
+    import pytest
+
+    with pytest.raises(HTTPException) as exc:
+        app_module.export_sessions(offset=-1)
+
+    assert exc.value.status_code == 400
