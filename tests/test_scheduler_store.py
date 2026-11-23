@@ -269,6 +269,36 @@ def test_claim_due_respects_limit_and_due_order(tmp_path: Path):
     assert store.metrics()["by_status"]["running"] == 2
 
 
+def test_retry_and_audit_pagination_reject_non_integer_limits(tmp_path):
+    store = SchedulerStore(tmp_path / "retry-strict-types.sqlite3")
+    item = store.create_schedule(
+        "Retry strict types", "Run", "2026-01-01T00:00:00+00:00",
+        "retry-strict-types",
+    )
+    store.claim_due("worker-a", now="2026-01-02T00:00:00+00:00")
+    assert store.finish_claim(
+        item["id"], "worker-a", "failed",
+        now="2026-01-02T00:01:00+00:00",
+    )
+
+    for max_retries in (True, 2.0, "2"):
+        with pytest.raises(ValueError, match="max_retries"):
+            store.retry_failed_schedule(
+                item["id"], "2026-01-03T00:00:00+00:00",
+                "reviewed failure", max_retries=max_retries,
+            )
+
+    for kwargs in (
+        {"limit": True}, {"limit": 2.0}, {"limit": "2"},
+        {"offset": True}, {"offset": 1.0}, {"offset": "1"},
+    ):
+        with pytest.raises(ValueError, match="limit or offset"):
+            store.list_retry_audit(item["id"], **kwargs)
+
+    assert store.get_schedule(item["id"])["status"] == "failed"
+    assert store.list_retry_audit(item["id"]) == []
+
+
 def test_retry_failed_schedule_is_explicit_audited_and_preserves_history(tmp_path):
     store = SchedulerStore(tmp_path / "schedule-retry.sqlite3")
     item = store.create_schedule(
