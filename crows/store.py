@@ -790,8 +790,13 @@ class TaskStore:
         event_type: str | None = None,
     ) -> dict[str, Any]:
         """Return stable, bounded recovery audit pages without task payloads."""
-        if not 1 <= limit <= 200 or not 0 <= offset <= 1_000_000:
-            raise ValueError("limit or offset is outside its allowed range")
+        if (
+            isinstance(limit, bool) or not isinstance(limit, int)
+            or not 1 <= limit <= 200
+            or isinstance(offset, bool) or not isinstance(offset, int)
+            or not 0 <= offset <= 1_000_000
+        ):
+            raise ValueError("limit or offset must be integers within their allowed ranges")
         if attempt_id is not None and (not attempt_id.strip() or len(attempt_id) > 128):
             raise ValueError("Invalid workflow recovery attempt ID")
         if event_type is not None and event_type not in {"started", "completed", "interrupted"}:
@@ -865,8 +870,13 @@ class TaskStore:
         """List workflows with bounded pagination and optional operational filters."""
         valid_statuses = {"running", "succeeded", "partial", "failed", "unknown"}
         valid_control_states = {"running", "paused", "cancel_requested", "completed"}
-        if not 1 <= limit <= 200 or not 0 <= offset <= 1_000_000:
-            raise ValueError("limit or offset is outside its allowed range")
+        if (
+            isinstance(limit, bool) or not isinstance(limit, int)
+            or not 1 <= limit <= 200
+            or isinstance(offset, bool) or not isinstance(offset, int)
+            or not 0 <= offset <= 1_000_000
+        ):
+            raise ValueError("limit or offset must be integers within their allowed ranges")
         if status is not None and status not in valid_statuses:
             raise ValueError("invalid workflow status filter")
         if control_state is not None and control_state not in valid_control_states:
