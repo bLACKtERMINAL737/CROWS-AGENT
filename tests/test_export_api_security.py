@@ -29,10 +29,12 @@ def test_memory_and_conversation_exports_require_authentication(monkeypatch, tmp
     memory_response = client.get("/memory/export")
     conversation_response = client.get("/sessions/export")
     import_response = client.post("/memory/import", json={})
+    conversation_import_response = client.post("/sessions/import", json={})
 
     assert memory_response.status_code == 401
     assert conversation_response.status_code == 401
     assert import_response.status_code == 401
+    assert conversation_import_response.status_code == 401
     assert "private memory marker" not in memory_response.text
     assert "private conversation marker" not in conversation_response.text
 
@@ -69,3 +71,44 @@ def test_authenticated_conversation_export_rejects_out_of_range_limit(monkeypatc
     response = client.get("/sessions/export?limit=0", headers=headers)
 
     assert response.status_code == 400
+
+
+
+def test_authenticated_conversation_import_restores_archive(monkeypatch, tmp_path):
+    client, store = make_client(monkeypatch, tmp_path)
+    headers = {"X-Crows-Token": "coverage-audit-test-token"}
+    timestamp = "2026-02-03T00:00:00+00:00"
+    archive = {
+        "format": "aether-conversation-export",
+        "version": 1,
+        "sessions": [
+            {
+                "id": "restored-session",
+                "title": "Restored from backup",
+                "created_at": timestamp,
+                "updated_at": timestamp,
+                "messages": [
+                    {
+                        "id": "restored-message",
+                        "session_id": "restored-session",
+                        "role": "user",
+                        "content": "restored conversation content",
+                        "created_at": timestamp,
+                    }
+                ],
+            }
+        ],
+    }
+
+    response = client.post("/sessions/import", json=archive, headers=headers)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "imported_sessions": 1,
+        "imported_messages": 1,
+        "skipped_sessions": 0,
+    }
+    assert store.get_session("restored-session")["title"] == "Restored from backup"
+    assert store.list_session_messages("restored-session")[0]["content"] == (
+        "restored conversation content"
+    )
