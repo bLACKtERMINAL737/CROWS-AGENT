@@ -275,7 +275,9 @@ def test_retry_and_audit_pagination_reject_non_integer_limits(tmp_path):
         "Retry strict types", "Run", "2026-01-01T00:00:00+00:00",
         "retry-strict-types",
     )
-    store.claim_due("worker-a", now="2026-01-02T00:00:00+00:00")
+    store.claim_due(
+        "worker-a", now="2026-01-02T00:00:00+00:00", lease_seconds=120
+    )
     assert store.finish_claim(
         item["id"], "worker-a", "failed",
         now="2026-01-02T00:01:00+00:00",
