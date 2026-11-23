@@ -951,10 +951,14 @@ class TaskStore:
         This is diagnostic only: it never changes workflow or task state.
         Paused workflows are intentionally excluded from stale execution alerts.
         """
-        if not 1 <= stale_after_seconds <= 604800:
-            raise ValueError("stale_after_seconds must be between 1 and 604800")
-        if not 1 <= limit <= 200:
-            raise ValueError("limit must be between 1 and 200")
+        if (
+            isinstance(stale_after_seconds, bool)
+            or not isinstance(stale_after_seconds, int)
+            or not 1 <= stale_after_seconds <= 604800
+        ):
+            raise ValueError("stale_after_seconds must be an integer between 1 and 604800")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
+            raise ValueError("limit must be an integer between 1 and 200")
         now = datetime.now(timezone.utc)
         cutoff = (now - timedelta(seconds=stale_after_seconds)).isoformat()
         with self.connect() as con:

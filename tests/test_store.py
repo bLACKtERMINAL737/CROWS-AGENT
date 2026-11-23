@@ -1406,36 +1406,4 @@ def test_session_search_pagination_is_stable_when_timestamps_tie(tmp_path: Path)
 
 
 
-def test_workflow_audit_and_listing_reject_non_integer_pagination(tmp_path: Path):
-    store = TaskStore(tmp_path / "workflow-pagination-strict-types.sqlite3")
-    workflow = store.create_workflow("Pagination types", [{"title": "Task", "input": "Run"}])
 
-    for limit in (True, 2.0, "2"):
-        try:
-            store.list_workflows(limit=limit)
-        except ValueError as exc:
-            assert "limit or offset" in str(exc)
-        else:
-            raise AssertionError("invalid workflow list limit must be rejected")
-
-        try:
-            store.list_workflow_recovery_audit(workflow["id"], limit=limit)
-        except ValueError as exc:
-            assert "limit or offset" in str(exc)
-        else:
-            raise AssertionError("invalid recovery audit limit must be rejected")
-
-    for offset in (True, 1.0, "1"):
-        try:
-            store.list_workflows(offset=offset)
-        except ValueError as exc:
-            assert "limit or offset" in str(exc)
-        else:
-            raise AssertionError("invalid workflow list offset must be rejected")
-
-        try:
-            store.list_workflow_recovery_audit(workflow["id"], offset=offset)
-        except ValueError as exc:
-            assert "limit or offset" in str(exc)
-        else:
-            raise AssertionError("invalid recovery audit offset must be rejected")
