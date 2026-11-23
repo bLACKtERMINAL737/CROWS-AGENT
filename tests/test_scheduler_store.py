@@ -450,6 +450,21 @@ def test_recurring_schedule_requeues_after_success_and_skips_missed_ticks(tmp_pa
     assert len(history) == 1 and history[0]["task_id"] == "task-1"
 
 
+def test_recurring_schedule_skips_centuries_of_missed_ticks_in_constant_time(tmp_path):
+    store = SchedulerStore(tmp_path / "recurring-century-catchup.sqlite3")
+    item = store.create_schedule(
+        "Century catch-up", "Run", "2000-01-01T00:00:00+00:00",
+        "century-catchup", recurrence_interval_seconds=60, max_occurrences=3,
+    )
+    now = "2200-01-01T00:00:00+00:00"
+    assert store.claim_due("worker-a", now=now, lease_seconds=60)
+    assert store.finish_claim(item["id"], "worker-a", "completed", now=now)
+    saved = store.get_schedule(item["id"])
+    assert saved["status"] == "scheduled"
+    assert saved["run_at"] == "2200-01-01T00:01:00+00:00"
+    assert saved["occurrence_count"] == 1
+
+
 def test_recurring_schedule_stops_at_occurrence_limit_and_preserves_history(tmp_path):
     store = SchedulerStore(tmp_path / "recurring-limit.sqlite3")
     item = store.create_schedule(

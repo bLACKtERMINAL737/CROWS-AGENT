@@ -449,10 +449,12 @@ class SchedulerStore:
                      row["run_at"], instant, result_json, error_text),
                 )
             if status == "completed" and interval is not None and occurrence < int(maximum):
-                next_run = datetime.fromisoformat(row["run_at"]) + timedelta(seconds=int(interval))
+                interval_delta = timedelta(seconds=int(interval))
+                next_run = datetime.fromisoformat(row["run_at"]) + interval_delta
                 finished = datetime.fromisoformat(instant)
-                while next_run <= finished:
-                    next_run += timedelta(seconds=int(interval))
+                if next_run <= finished:
+                    missed_intervals = (finished - next_run) // interval_delta + 1
+                    next_run += missed_intervals * interval_delta
                 cursor = con.execute(
                     "UPDATE scheduled_tasks SET status='scheduled',run_at=?,task_id=NULL,"
                     "result_json=NULL,error_text=NULL,lease_owner=NULL,lease_expires_at=NULL,"
