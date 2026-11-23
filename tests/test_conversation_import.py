@@ -170,3 +170,31 @@ def test_conversation_import_request_rejects_message_from_another_session():
         app_module.ConversationImportRequest(
             format="aether-conversation-export", version=1, sessions=[archive]
         )
+
+
+
+def test_exported_conversation_archive_round_trips_into_another_store(monkeypatch, tmp_path):
+    source = TaskStore(tmp_path / "conversation-export-source.sqlite3")
+    original = source.create_session("Round trip conversation")
+    source.add_session_message(original["id"], "user", "round trip question")
+    source.add_session_message(original["id"], "assistant", "round trip answer")
+    monkeypatch.setattr(app_module, "store", source)
+
+    archive = app_module.export_sessions(limit=10)
+    request = app_module.ConversationImportRequest(**archive)
+    restored_store = TaskStore(tmp_path / "conversation-export-target.sqlite3")
+
+    result = restored_store.import_sessions(
+        [session.model_dump() for session in request.sessions]
+    )
+
+    assert result == {
+        "imported_sessions": 1,
+        "imported_messages": 2,
+        "skipped_sessions": 0,
+    }
+    restored = restored_store.list_session_messages(original["id"], limit=10)
+    assert [message["content"] for message in restored] == [
+        "round trip question",
+        "round trip answer",
+    ]
