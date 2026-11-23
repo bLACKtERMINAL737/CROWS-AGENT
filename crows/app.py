@@ -462,6 +462,16 @@ class MemoryImportRequest(BaseModel):
     version: Literal[1]
     memories: list[MemoryImportItem] = Field(max_length=10_000)
 
+    @field_validator("memories")
+    @classmethod
+    def validate_memory_archive_budget(
+        cls, value: list[MemoryImportItem]
+    ) -> list[MemoryImportItem]:
+        total_chars = sum(len(memory.content) for memory in value)
+        if total_chars > 16_000_000:
+            raise ValueError("memory archive exceeds the 16-million-character content limit")
+        return value
+
 
 class MemorySearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=300)
@@ -577,6 +587,13 @@ class ConversationImportRequest(BaseModel):
         ]
         if len(message_ids) != len(set(message_ids)):
             raise ValueError("conversation archive contains duplicate message IDs")
+        total_content_chars = sum(
+            len(message.content)
+            for session in value
+            for message in session.messages
+        )
+        if total_content_chars > 16_000_000:
+            raise ValueError("conversation archive exceeds the 16-million-character content limit")
         return value
 
 
@@ -4235,11 +4252,17 @@ def list_memory(limit: int = 100, category: str | None = None):
 
 @app.get("/memory/export")
 def export_memories():
-    """Export saved local memories as a portable, versioned JSON document."""
+    """Export saved local memories as a portable, bounded versioned JSON document."""
+    memories = store.list_memories(limit=10000)
+    if sum(len(memory["content"]) for memory in memories) > 16_000_000:
+        raise HTTPException(
+            status_code=413,
+            detail="Memory archive exceeds the 16-million-character export limit",
+        )
     return {
         "format": "crows-memory-export",
         "version": 1,
-        "memories": store.list_memories(limit=10000),
+        "memories": memories,
     }
 
 
@@ -4303,6 +4326,7 @@ def export_sessions(limit: int = 100, offset: int = 0):
     sessions = store.list_sessions(limit=limit, offset=offset)
     archive = []
     total_messages = 0
+    total_content_chars = 0
     for session in sessions:
         session_data = store.get_session(session["id"])
         if session_data is None:
@@ -4318,6 +4342,12 @@ def export_sessions(limit: int = 100, offset: int = 0):
             raise HTTPException(
                 status_code=413,
                 detail="Archive exceeds 50000 messages; reduce limit or use offset to export smaller pages",
+            )
+        total_content_chars += sum(len(message["content"]) for message in messages)
+        if total_content_chars > 16_000_000:
+            raise HTTPException(
+                status_code=413,
+                detail="Conversation archive exceeds the 16-million-character export limit; reduce limit or use offset",
             )
         session_data["messages"] = messages
         archive.append(session_data)
