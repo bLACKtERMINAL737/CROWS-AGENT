@@ -1595,6 +1595,66 @@ class TaskStore:
                         (session_id, title.strip()[:120] or "New conversation", now, now))
         return self.get_session(session_id)  # type: ignore[return-value]
 
+    def import_sessions(self, sessions: list[dict[str, Any]]) -> dict[str, int]:
+        """Restore sessions and their messages atomically; never overwrite local IDs."""
+        imported_sessions = 0
+        imported_messages = 0
+        skipped_sessions = 0
+        with self.connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            for session in sessions:
+                existing_session = con.execute(
+                    "SELECT 1 FROM sessions WHERE id=?", (session["id"],)
+                ).fetchone()
+                if existing_session is not None:
+                    skipped_sessions += 1
+                    continue
+
+                # A message ID collision means this archive session is not safe to
+                # restore: skip the whole session rather than creating partial history.
+                collision = False
+                for message in session["messages"]:
+                    if con.execute(
+                        "SELECT 1 FROM session_messages WHERE id=?",
+                        (message["id"],),
+                    ).fetchone() is not None:
+                        collision = True
+                        break
+                if collision:
+                    skipped_sessions += 1
+                    continue
+
+                con.execute(
+                    "INSERT INTO sessions(id,title,created_at,updated_at) VALUES(?,?,?,?)",
+                    (
+                        session["id"], session["title"],
+                        session["created_at"], session["updated_at"],
+                    ),
+                )
+                for message in session["messages"]:
+                    con.execute(
+                        "INSERT INTO session_messages(id,session_id,role,content,created_at) "
+                        "VALUES(?,?,?,?,?)",
+                        (
+                            message["id"], session["id"], message["role"],
+                            message["content"], message["created_at"],
+                        ),
+                    )
+                    con.executemany(
+                        "INSERT INTO session_message_search_terms(message_id,term) VALUES(?,?)",
+                        [
+                            (message["id"], term)
+                            for term in _memory_search_tokens(message["content"])
+                        ],
+                    )
+                    imported_messages += 1
+                imported_sessions += 1
+        return {
+            "imported_sessions": imported_sessions,
+            "imported_messages": imported_messages,
+            "skipped_sessions": skipped_sessions,
+        }
+
     def get_session(self, session_id: str) -> dict[str, Any] | None:
         with self.connect() as con:
             row = con.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
