@@ -1763,11 +1763,14 @@ class TaskStore:
     ) -> list[dict[str, Any]]:
         """Search message text through the Unicode-normalized token index."""
         if (
-            isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200
+            isinstance(limit, bool) or not isinstance(limit, int)
             or isinstance(offset, bool) or not isinstance(offset, int)
-            or not 0 <= offset <= 1_000_000
         ):
-            raise ValueError("limit and offset must be integers within their allowed ranges")
+            raise ValueError("limit and offset must be integers")
+        if limit <= 0 or offset < 0:
+            return []
+        if limit > 200 or offset > 1_000_000:
+            raise ValueError("limit and offset exceed their allowed ranges")
         terms = sorted(_memory_search_tokens(query))
         if not terms:
             return []
