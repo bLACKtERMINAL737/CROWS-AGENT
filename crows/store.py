@@ -1695,11 +1695,11 @@ class TaskStore:
             row = con.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
         return dict(row) if row else None
 
-    def list_sessions(self, limit: int = 50) -> list[dict[str, Any]]:
+    def list_sessions(self, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
         with self.connect() as con:
             rows = con.execute(
                 "SELECT s.*, (SELECT COUNT(*) FROM session_messages m WHERE m.session_id=s.id) AS message_count "
-                "FROM sessions s ORDER BY s.updated_at DESC LIMIT ?", (limit,)
+                "FROM sessions s ORDER BY s.updated_at DESC LIMIT ? OFFSET ?", (limit, offset)
             ).fetchall()
         return [dict(row) for row in rows]
 
