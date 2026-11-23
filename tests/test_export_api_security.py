@@ -28,9 +28,11 @@ def test_memory_and_conversation_exports_require_authentication(monkeypatch, tmp
 
     memory_response = client.get("/memory/export")
     conversation_response = client.get("/sessions/export")
+    import_response = client.post("/memory/import", json={})
 
     assert memory_response.status_code == 401
     assert conversation_response.status_code == 401
+    assert import_response.status_code == 401
     assert "private memory marker" not in memory_response.text
     assert "private conversation marker" not in conversation_response.text
 
