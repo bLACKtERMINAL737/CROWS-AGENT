@@ -608,6 +608,27 @@ def test_scheduler_metrics_separates_paused_overdue_from_actionable_overdue(tmp_
     assert metrics["overdue_lateness_p50_seconds"] > 0
 
 
+def test_scheduler_list_pagination_rejects_non_integer_types(tmp_path):
+    store = SchedulerStore(tmp_path / "strict-list-pagination.sqlite3")
+    item = store.create_schedule(
+        "Pagination", "Run", "2026-01-01T00:00:00+00:00", "strict-list-pagination"
+    )
+
+    for limit in (True, 2.0, "2"):
+        with pytest.raises(ValueError, match="limit"):
+            store.list_schedules(limit=limit)
+        with pytest.raises(ValueError, match="limit or offset"):
+            store.list_execution_history(item["id"], limit=limit)
+        with pytest.raises(ValueError, match="limit or offset"):
+            store.list_reconciliation_audit(item["id"], limit=limit)
+
+    for offset in (True, 1.0, "1"):
+        with pytest.raises(ValueError, match="limit or offset"):
+            store.list_execution_history(item["id"], offset=offset)
+        with pytest.raises(ValueError, match="limit or offset"):
+            store.list_reconciliation_audit(item["id"], offset=offset)
+
+
 def test_execution_history_uses_bounded_stable_pagination(tmp_path):
     store = SchedulerStore(tmp_path / "history-pages.sqlite3")
     item = store.create_schedule("History", "Run", "2026-01-01T00:00:00+00:00", "history-pages")
