@@ -1540,6 +1540,41 @@ class TaskStore:
             results.append(item)
         return results
 
+    def import_memories(self, memories: list[dict[str, Any]]) -> dict[str, int]:
+        """Import archive records atomically, preserving IDs and never overwriting local data."""
+        imported = 0
+        skipped = 0
+        with self.connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            for memory in memories:
+                cursor = con.execute(
+                    "INSERT OR IGNORE INTO memories "
+                    "(id,category,content,source,tags_json,created_at,updated_at) "
+                    "VALUES(?,?,?,?,?,?,?)",
+                    (
+                        memory["id"],
+                        memory["category"],
+                        memory["content"],
+                        memory["source"],
+                        json.dumps(memory["tags"], ensure_ascii=False),
+                        memory["created_at"],
+                        memory["updated_at"],
+                    ),
+                )
+                if cursor.rowcount == 0:
+                    skipped += 1
+                    continue
+                tokens = _memory_search_tokens(
+                    memory["category"], memory["content"], *memory["tags"]
+                )
+                con.executemany(
+                    "INSERT INTO memory_search_terms(memory_id, term) VALUES(?, ?)",
+                    [(memory["id"], token) for token in tokens],
+                )
+                imported += 1
+        return {"imported": imported, "skipped": skipped}
+
+
     def delete_memory(self, memory_id: str) -> bool:
         with self.connect() as con:
             cursor = con.execute("DELETE FROM memories WHERE id=?", (memory_id,))
