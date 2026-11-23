@@ -21,7 +21,7 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI, HTTPException, Request
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .agent_concurrency import agent_execution_slot
 from .coding import CodingEngine, CodingError
@@ -447,16 +447,17 @@ class ConversationImportMessage(BaseModel):
     model_config = {"extra": "forbid"}
 
     id: str = Field(min_length=1, max_length=128)
+    session_id: str = Field(min_length=1, max_length=128)
     role: Literal["user", "assistant", "system"]
     content: str = Field(max_length=100_000)
     created_at: str = Field(min_length=1, max_length=64)
 
-    @field_validator("id")
+    @field_validator("id", "session_id")
     @classmethod
-    def validate_message_id(cls, value: str) -> str:
+    def validate_message_ids(cls, value: str) -> str:
         value = value.strip()
         if not value:
-            raise ValueError("message id must not be blank")
+            raise ValueError("message and session IDs must not be blank")
         return value
 
     @field_validator("created_at")
@@ -498,6 +499,13 @@ class ConversationImportSession(BaseModel):
         if parsed.tzinfo is None:
             raise ValueError("session timestamp must include a timezone")
         return parsed.astimezone(timezone.utc).isoformat()
+
+
+    @model_validator(mode="after")
+    def validate_message_session_ids(self):
+        if any(message.session_id != self.id for message in self.messages):
+            raise ValueError("every imported message must belong to its containing session")
+        return self
 
 
 class ConversationImportRequest(BaseModel):
