@@ -193,3 +193,35 @@ def test_exported_conversation_archive_round_trips_into_another_store(monkeypatc
         "round trip question",
         "round trip answer",
     ]
+
+
+
+def test_conversation_import_rejects_aggregate_content_over_budget():
+    session_id = "large-content-session"
+    timestamp = "2026-02-03T00:00:00+00:00"
+    messages = [
+        {
+            "id": f"large-content-message-{index}",
+            "session_id": session_id,
+            "role": "user",
+            "content": "x" * 100_000,
+            "created_at": timestamp,
+        }
+        for index in range(161)
+    ]
+    archive = {
+        "format": "aether-conversation-export",
+        "version": 1,
+        "sessions": [
+            {
+                "id": session_id,
+                "title": "Large content",
+                "created_at": timestamp,
+                "updated_at": timestamp,
+                "messages": messages,
+            }
+        ],
+    }
+
+    with pytest.raises(ValidationError, match="16-million-character"):
+        app_module.ConversationImportRequest(**archive)
