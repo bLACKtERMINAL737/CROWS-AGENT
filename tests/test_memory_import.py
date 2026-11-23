@@ -96,3 +96,16 @@ def test_memory_import_rejects_extra_fields():
             version=1,
             memories=[record],
         )
+
+
+
+def test_memory_import_rejects_aggregate_content_over_budget():
+    records = [
+        memory_record(memory_id=f"large-memory-{index}", content="x" * 4_000)
+        for index in range(4_001)
+    ]
+
+    with pytest.raises(ValidationError, match="16-million-character"):
+        app_module.MemoryImportRequest(
+            format="crows-memory-export", version=1, memories=records
+        )
