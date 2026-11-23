@@ -390,6 +390,8 @@ class TaskStore:
         return dict(row) if row else None
 
     def list_tasks(self, limit: int = 50) -> list[dict[str, Any]]:
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
+            raise ValueError("limit must be an integer between 1 and 1000")
         with self.connect() as con:
             rows = con.execute("SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
         return [dict(row) for row in rows]
@@ -1760,8 +1762,12 @@ class TaskStore:
         self, query: str, limit: int = 20, offset: int = 0
     ) -> list[dict[str, Any]]:
         """Search message text through the Unicode-normalized token index."""
-        if limit <= 0 or offset < 0:
-            return []
+        if (
+            isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200
+            or isinstance(offset, bool) or not isinstance(offset, int)
+            or not 0 <= offset <= 1_000_000
+        ):
+            raise ValueError("limit and offset must be integers within their allowed ranges")
         terms = sorted(_memory_search_tokens(query))
         if not terms:
             return []
