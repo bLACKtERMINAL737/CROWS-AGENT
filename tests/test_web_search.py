@@ -260,6 +260,7 @@ def test_pinned_http_connection_connects_to_validated_ip(tmp_path, monkeypatch):
 
 def test_pinned_https_connection_pins_ip_but_keeps_hostname_for_tls(tmp_path, monkeypatch):
     import socket
+    import ssl
     from urllib.parse import urlsplit
 
     from crows.tools import ToolRegistry
@@ -273,6 +274,11 @@ def test_pinned_https_connection_pins_ip_but_keeps_hostname_for_tls(tmp_path, mo
         return raw_socket
 
     class FakeTLSContext:
+        # http.client.HTTPSConnection inspects these SSLContext attributes
+        # during construction on supported Python versions.
+        verify_mode = ssl.CERT_REQUIRED
+        check_hostname = True
+
         def wrap_socket(self, sock, server_hostname):
             seen["wrapped_socket"] = sock
             seen["server_hostname"] = server_hostname
