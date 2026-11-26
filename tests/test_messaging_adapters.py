@@ -185,6 +185,34 @@ async def test_non_json_provider_error_preserves_explicit_http_status(status):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "adapter,message",
+    [
+        (
+            TelegramOutboundAdapter(lambda: ("bot-token", "")),
+            OutboundTransportMessage("telegram", "777", "hello", "malformed-success-telegram"),
+        ),
+        (
+            DiscordOutboundAdapter(lambda: "https://discord.com/api/webhooks/123/secret"),
+            OutboundTransportMessage("discord", "configured-webhook", "hello", "malformed-success-discord"),
+        ),
+    ],
+)
+async def test_malformed_success_response_remains_an_uncertain_transport_error(adapter, message):
+    class MalformedSuccessResponse(FakeResponse):
+        def __init__(self):
+            super().__init__(200, None)
+            self.content = b"<html>not a provider receipt</html>"
+
+        def json(self):
+            raise ValueError("response is not JSON")
+
+    FakeClient.response = MalformedSuccessResponse()
+    with pytest.raises(ValueError, match="response is not JSON"):
+        await adapter.send(message)
+
+
+@pytest.mark.asyncio
 async def test_rate_limit_uses_default_for_invalid_header_and_survives_invalid_json():
     class MalformedResponse(FakeResponse):
         def __init__(self):
