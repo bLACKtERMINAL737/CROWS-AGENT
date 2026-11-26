@@ -164,6 +164,27 @@ async def test_discord_rate_limit_accepts_fractional_json_retry_after_and_caps_d
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status", [400, 500])
+async def test_non_json_provider_error_preserves_explicit_http_status(status):
+    class NonJsonErrorResponse(FakeResponse):
+        def __init__(self):
+            super().__init__(status, None)
+            self.content = b"<html>upstream error</html>"
+
+        def json(self):
+            raise ValueError("response is not JSON")
+
+    FakeClient.response = NonJsonErrorResponse()
+    adapter = TelegramOutboundAdapter(lambda: ("bot-token", ""))
+    receipt = await adapter.send(
+        OutboundTransportMessage("telegram", "777", "hello", f"non-json-{status}")
+    )
+    assert receipt.success is False
+    assert receipt.status_code == status
+    assert receipt.retry_after_seconds is None
+
+
+@pytest.mark.asyncio
 async def test_rate_limit_uses_default_for_invalid_header_and_survives_invalid_json():
     class MalformedResponse(FakeResponse):
         def __init__(self):
