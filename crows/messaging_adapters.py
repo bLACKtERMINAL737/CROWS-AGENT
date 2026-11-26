@@ -135,7 +135,11 @@ def _response_body(response: httpx.Response) -> dict:
     try:
         body = response.json()
     except ValueError:
-        if response.status_code == 429:
+        # A non-2xx HTTP response is already an explicit provider outcome;
+        # error pages and proxies commonly return HTML instead of JSON.
+        # Keep malformed successful responses exceptional because delivery
+        # cannot be confirmed from an invalid success payload.
+        if not response.is_success:
             return {}
         raise
     return body if isinstance(body, dict) else {}
